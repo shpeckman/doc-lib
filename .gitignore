@@ -6,3 +6,4 @@
 /shard.lock/
 *.dwarf
 /.zig-cache/
+makefile
