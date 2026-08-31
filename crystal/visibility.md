@@ -11,6 +11,7 @@ Official docs: <https://crystal-lang.org/reference/latest/syntax_and_semantics/v
 - Methods are **public by default**. There is no `public` keyword.
 - **`private`** — callable only with *no receiver* (implicit self). The single exception: an explicit `self.` receiver is allowed.
 - **`protected`** — callable on any receiver, but only from the scope of the same type, its descendants, or types in the same namespace.
+- **Private constants/types** — reachable only via *relative* constant lookup inside their namespace tree; a fully qualified path is rejected even from inside the namespace.
 - Both are **compile-time only** checks. No runtime cost, no security boundary.
 - Mental model:
 
@@ -222,14 +223,14 @@ Wallet.new.balance # same error — top level (Program scope) is not in Wallet's
 
 ### Private constants and types
 
-`private` applies to `class`, `module`, `lib`, `enum`, `alias`, and constants. Such names can only be referenced from inside their namespace — never fully qualified from outside:
+`private` applies to `class`, `module`, `lib`, `enum`, `alias`, and constants. Such names are reachable **only through relative constant lookup from inside their namespace tree** — an explicitly qualified path is rejected everywhere, even inside the namespace itself (see §5.7):
 
 ```crystal
 class Config
   private SECRET = 42
 
   def reveal
-    SECRET # OK inside
+    SECRET # OK — relative lookup, inside the namespace
   end
 end
 
@@ -503,29 +504,64 @@ Speaker.new.run { emit("hello") }
 
 Don't rely on private helpers inside DSL-style blocks.
 
+### 5.7 Private constants and types require *relative* paths
+
+A private type or constant is resolved through ordinary lexical constant lookup. If you spell out a qualified path that traverses the private name, the reference is rejected — **even when it sits inside the owning namespace itself**:
+
+```crystal
+module VT
+  private enum Act : UInt8
+    Exec
+  end
+
+  def self.go
+    Act::Exec # OK — relative lookup
+  end
+end
+
+module VT::Inner
+  def self.go
+    Act::Exec # OK — relative lookup from a nested namespace
+  end
+end
+
+module VT
+  def self.broken
+    VT::Act::Exec # Error: private constant VT::Act::Exec referenced
+  end
+end
+```
+
+Note that the last one fails *inside `VT` itself*. The real rule is not "inside vs outside the namespace" but "relative vs qualified": any path that explicitly traverses the private constant is rejected, wherever it appears.
+
+**Practical consequence:** when you make an existing type private, you must also de-qualify every internal reference to it (`VT::St::Gnd` → `St::Gnd`). Code elsewhere that already uses relative names — including code in nested namespaces and compact-form definitions like `module VT::Inner` — keeps compiling unchanged.
+
 ---
 
 ## 6. Compiler error reference
 
-| Situation                                        | Message                                                     |
-|--------------------------------------------------|-------------------------------------------------------------|
-| Private method with a receiver                   | `private method 'say' called for Person`                    |
-| Private setter from outside                      | `private method 'value=' called for Counter`                |
-| Private constructor via `.new`                   | `private method 'new' called for Token.class`               |
-| Module's private method from outside             | `private method 'whisper' called for Whisperer`             |
-| Protected method from unrelated type / top level | `protected method 'balance' called for Wallet`              |
-| Protected getter from outside                    | `protected method 'celsius' called for Temp`                |
-| Protected override across sibling types          | `protected method 'area' called for Square`                 |
-| Private constant from outside                    | `private constant Config::SECRET referenced`                |
-| Private enum member from outside                 | `private constant Machine::State::On referenced`            |
-| File-private method from another file            | `undefined local variable or method 'helper' for top-level` |
-| File-private type from another file              | `undefined constant 'Internal'`                             |
+| Situation                                                            | Message                                                     |
+|----------------------------------------------------------------------|-------------------------------------------------------------|
+| Private method with a receiver                                       | `private method 'say' called for Person`                    |
+| Private setter from outside                                          | `private method 'value=' called for Counter`                |
+| Private constructor via `.new`                                       | `private method 'new' called for Token.class`               |
+| Module's private method from outside                                 | `private method 'whisper' called for Whisperer`             |
+| Protected method from unrelated type / top level                     | `protected method 'balance' called for Wallet`              |
+| Protected getter from outside                                        | `protected method 'celsius' called for Temp`                |
+| Protected override across sibling types                              | `protected method 'area' called for Square`                 |
+| Private constant from outside                                        | `private constant Config::SECRET referenced`                |
+| Private enum member from outside                                     | `private constant Machine::State::On referenced`            |
+| Qualified path to a private constant, even from inside its namespace | `private constant VT::Act::Exec referenced`                 |
+| File-private method from another file                                | `undefined local variable or method 'helper' for top-level` |
+| File-private type from another file                                  | `undefined constant 'Internal'`                             |
 
 ---
 
 ## 7. The rule, precisely
 
-**`private`** — the call must have *no receiver*, or the receiver must be exactly `self`. Nothing else matters: not the class you're in, not inheritance, not modules. This rule is uniform across instance methods, class methods, setters, and constructors.
+**`private` methods** — the call must have *no receiver*, or the receiver must be exactly `self`. Nothing else matters: not the class you're in, not inheritance, not modules. This rule is uniform across instance methods, class methods, setters, and constructors.
+
+**`private` constants and types** — reachable only via *relative* constant lookup from within the owning namespace tree (nesting counts). A qualified path that explicitly traverses the private name is rejected everywhere, including inside the namespace itself.
 
 **`protected`** — explicit receivers are allowed, and the check is between the **concrete self type** at the call site and the **type where the method is defined**. Access is granted when any of these holds:
 
@@ -537,6 +573,7 @@ Corollaries that fall out of this:
 
 - Private methods can't be called on *anyone else*, period — no friend access.
 - Private class methods are unreachable from instance methods (the receiver would be the class, not `self`).
+- Privatizing an existing type forces de-qualification of internal references (`VT::St` → `St`); relative references from nested namespaces keep working.
 - Protected methods defined once in a parent are freely usable across the whole hierarchy; protected methods *overridden per subclass* are locked to each concrete sibling.
 - Visibility is enforced per method definition — subclasses can widen or narrow it, and narrowing survives virtual dispatch.
 - None of it exists at runtime. It's purely a compile-time contract.
