@@ -340,55 +340,65 @@ class TestAddRobustness:
 
 
 class TestBundle:
-    @pytest.mark.parametrize("name,comment,language", [
-        ("a.py", "# a.py", "py"),
-        ("a.yml", "# a.yml", "yaml"),
-        ("a.yaml", "# a.yaml", "yaml"),
-        ("a.cr", "# a.cr", "crystal"),
-        ("a.ex", "# a.ex", "elixir"),
-        ("a.jl", "# a.jl", "julia"),
-        ("a.ps1", "# a.ps1", "powershell"),
-        ("a.m", "// a.m", "objectivec"),
-        ("a.hpp", "// a.hpp", "cpp"),
-        ("a.mjs", "// a.mjs", "javascript"),
-        ("a.kt", "// a.kt", "kotlin"),
-        ("a.clj", "; a.clj", "clojure"),
-        ("a.erl", "% a.erl", "erlang"),
-        ("a.fs", "// a.fs", "fsharp"),
-        ("a.tex", "% a.tex", "latex"),
-        ("a.tf", "# a.tf", "hcl"),
-        ("Makefile", "# Makefile", "makefile"),
-        ("Dockerfile", "# Dockerfile", "dockerfile"),
-        ("CMakeLists.txt", "# CMakeLists.txt", "cmake"),
-        ("Rakefile", "# Rakefile", "ruby"),
-        (".gitignore", "# .gitignore", "gitignore"),
+    @pytest.mark.parametrize("name,comment", [
+        ("a.py", "# a.py"),
+        ("a.yml", "# a.yml"),
+        ("a.yaml", "# a.yaml"),
+        ("a.cr", "# a.cr"),
+        ("a.ex", "# a.ex"),
+        ("a.jl", "# a.jl"),
+        ("a.ps1", "# a.ps1"),
+        ("a.m", "// a.m"),
+        ("a.hpp", "// a.hpp"),
+        ("a.mjs", "// a.mjs"),
+        ("a.kt", "// a.kt"),
+        ("a.clj", "; a.clj"),
+        ("a.erl", "% a.erl"),
+        ("a.fs", "// a.fs"),
+        ("a.tex", "% a.tex"),
+        ("a.tf", "# a.tf"),
+        ("Makefile", "# Makefile"),
+        ("Dockerfile", "# Dockerfile"),
+        ("CMakeLists.txt", "# CMakeLists.txt"),
+        ("Rakefile", "# Rakefile"),
+        (".gitignore", "# .gitignore"),
     ])
-    def test_fence_languages(self, tmp_path, name, comment, language):
+    def test_fence_paths(self, tmp_path, name, comment):
         write(tmp_path / name, f"{comment}\ncontent\n")
         result = run(BUNDLE, ".", cwd=tmp_path)
         assert result.returncode == 0, result.stderr
-        assert f"```{language}\n{comment}\ncontent\n```" in read(tmp_path / "bundle.md")
+        assert f"```{name}\n{comment}\ncontent\n```" in read(tmp_path / "bundle.md")
 
-    def test_only_path_comment_files_bundled(self, tmp_path):
+    def test_commentless_files_bundled_via_fence(self, tmp_path):
+        write(tmp_path / "data.json", '{"a": 1}\n')
+        write(tmp_path / "notes.txt", "plain\n")
+        result = run(BUNDLE, ".", cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        bundle = read(tmp_path / "bundle.md")
+        assert '```data.json\n{"a": 1}\n```' in bundle
+        assert "```notes.txt\nplain\n```" in bundle
+
+    def test_no_add_bundles_unstamped_files(self, tmp_path):
         write(tmp_path / "a.py", "# a.py\nx = 1\n")
         write(tmp_path / "b.py", "y = 2\n")
         result = run(BUNDLE, ".", "--no-add", cwd=tmp_path)
-        assert "bundled: 1" in result.stdout
+        assert "bundled: 2" in result.stdout
         bundle = read(tmp_path / "bundle.md")
-        assert "# a.py" in bundle
-        assert "y = 2" not in bundle
+        assert "```a.py\n# a.py\nx = 1\n```" in bundle
+        assert "```b.py\ny = 2\n```" in bundle
+        assert read(tmp_path / "b.py") == "y = 2\n"
 
     def test_fence_widens_for_backticks(self, tmp_path):
         write(tmp_path / "f.py", "# f.py\nx = '''\n```python\nnested\n```\n'''\n".replace("'''", '"""'))
         run(BUNDLE, ".", cwd=tmp_path)
         bundle = read(tmp_path / "bundle.md")
-        assert "````py\n" in bundle
+        assert "````f.py\n" in bundle
         assert "\n````" in bundle
 
     def test_fence_widens_beyond_four(self, tmp_path):
         write(tmp_path / "f.py", "# f.py\nx = '````'\n")
         run(BUNDLE, ".", cwd=tmp_path)
-        assert "`````py\n" in read(tmp_path / "bundle.md")
+        assert "`````f.py\n" in read(tmp_path / "bundle.md")
 
     def test_crlf_normalized_in_bundle(self, tmp_path):
         write(tmp_path / "w.c", b"// w.c\r\nint a;\r\n")
@@ -404,14 +414,13 @@ class TestBundle:
         write(tmp_path / "bin.py", b"\x00\x01\x02")
         write(tmp_path / "latin.py", "x = 'é'\n".encode("latin-1"))
         result = run(BUNDLE, ".", "--no-add", "-v", cwd=tmp_path)
-        assert "no files with path comments found" in result.stdout
+        assert "no bundleable files found" in result.stdout
         assert result.stderr.count("skipped") + result.stdout.count("skipped") >= 2
 
-    def test_no_matching_files_writes_nothing(self, tmp_path):
-        write(tmp_path / "a.py", "x = 1\n")
-        result = run(BUNDLE, ".", "--no-add", cwd=tmp_path)
+    def test_empty_tree_writes_nothing(self, tmp_path):
+        result = run(BUNDLE, ".", cwd=tmp_path)
         assert result.returncode == 0
-        assert "no files with path comments found" in result.stdout
+        assert "no bundleable files found" in result.stdout
         assert not (tmp_path / "bundle.md").exists()
 
     def test_custom_output(self, tmp_path):
@@ -447,7 +456,7 @@ class TestBundle:
     def test_skip_dirs_respected(self, tmp_path):
         write(tmp_path / "node_modules" / "a.js", "// node_modules/a.js\n1\n")
         result = run(BUNDLE, ".", cwd=tmp_path)
-        assert "no files with path comments found" in result.stdout
+        assert "no bundleable files found" in result.stdout
         assert not (tmp_path / "bundle.md").exists()
 
 
@@ -534,6 +543,45 @@ class TestUnbundle:
         out = tmp_path / "out"
         run(UNBUNDLE, bundle, "-o", out, cwd=tmp_path)
         assert (out / "a.py").exists()
+
+    def test_fence_path_wins_over_comment(self, tmp_path):
+        bundle = self.make_bundle(tmp_path, [("winner/x.py", "# loser/y.py\nx = 1")])
+        out = tmp_path / "out"
+        run(UNBUNDLE, bundle, "-o", out, cwd=tmp_path)
+        assert read(out / "winner" / "x.py") == "# loser/y.py\nx = 1\n"
+        assert not (out / "loser").exists()
+
+    def test_fence_path_restores_commentless_file(self, tmp_path):
+        bundle = self.make_bundle(tmp_path, [("data.json", '{"a": 1}')])
+        out = tmp_path / "out"
+        result = run(UNBUNDLE, bundle, "-o", out, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert read(out / "data.json") == '{"a": 1}\n'
+
+    def test_fence_path_with_spaces(self, tmp_path):
+        bundle = self.make_bundle(tmp_path, [("my dir/a file.py", "# my dir/a file.py\nx = 1")])
+        out = tmp_path / "out"
+        run(UNBUNDLE, bundle, "-o", out, cwd=tmp_path)
+        assert read(out / "my dir" / "a file.py") == "# my dir/a file.py\nx = 1\n"
+
+    def test_fence_path_absolute_rejected(self, tmp_path):
+        bundle = self.make_bundle(tmp_path, [("/tmp/evil_fence.py", "x = 1")])
+        result = run(UNBUNDLE, bundle, "-o", tmp_path / "out", cwd=tmp_path)
+        assert "skipped: 1" in result.stdout
+        assert not Path("/tmp/evil_fence.py").exists()
+
+    def test_fence_path_dotdot_rejected(self, tmp_path):
+        bundle = self.make_bundle(tmp_path, [("../escape.py", "x = 1")])
+        out = tmp_path / "out"
+        run(UNBUNDLE, bundle, "-o", out, cwd=tmp_path)
+        assert not (tmp_path / "escape.py").exists()
+        assert not (out / "escape.py").exists()
+
+    def test_fence_path_bare_filename(self, tmp_path):
+        bundle = self.make_bundle(tmp_path, [("solo.py", "x = 1")])
+        out = tmp_path / "out"
+        run(UNBUNDLE, bundle, "-o", out, cwd=tmp_path)
+        assert read(out / "solo.py") == "x = 1\n"
 
     def test_unterminated_fence_warned(self, tmp_path):
         write(tmp_path / "bundle.md", "```py\n# a.py\nx = 1\n")
@@ -649,6 +697,23 @@ class TestRoundtrip:
             restored = read(restore / name)
             assert restored == original, f"{name} mismatch"
 
+    def test_commentless_roundtrip(self, tmp_path):
+        source = tmp_path / "src"
+        files = {
+            "data.json": '{"a": 1}\n',
+            "notes.txt": "plain text\n",
+            "code.py": "x = 1\n",
+        }
+        for name, content in files.items():
+            write(source / name, content)
+        assert run(BUNDLE, ".", cwd=source).returncode == 0
+        restore = tmp_path / "restore"
+        result = run(UNBUNDLE, source / "bundle.md", "-o", restore, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert read(restore / "data.json") == '{"a": 1}\n'
+        assert read(restore / "notes.txt") == "plain text\n"
+        assert read(restore / "code.py") == "# code.py\nx = 1\n"
+
     def test_roundtrip_after_move(self, tmp_path):
         source = tmp_path / "src"
         write(source / "sub" / "a.py", "x = 1\n")
@@ -729,8 +794,8 @@ class TestBundlePreOp:
         assert read(tmp_path / "a.py") == "# a.py\nx = 1\n"
         assert read(tmp_path / "sub" / "b.go") == "// sub/b.go\npackage b\n"
         bundle = read(tmp_path / "bundle.md")
-        assert "```py\n# a.py\nx = 1\n```" in bundle
-        assert "```go\n// sub/b.go\npackage b\n```" in bundle
+        assert "```a.py\n# a.py\nx = 1\n```" in bundle
+        assert "```sub/b.go\n// sub/b.go\npackage b\n```" in bundle
 
     def test_preop_idempotent_on_second_bundle(self, tmp_path):
         write(tmp_path / "a.py", "x = 1\n")
@@ -740,12 +805,12 @@ class TestBundlePreOp:
         assert "unchanged: 1" in result.stdout
         assert "bundled: 1" in result.stdout
 
-    def test_no_add_skips_unstamped(self, tmp_path):
+    def test_no_add_skips_stamping(self, tmp_path):
         write(tmp_path / "a.py", "x = 1\n")
         result = run(BUNDLE, ".", "--no-add", cwd=tmp_path)
         assert "pre-op add:" not in result.stdout
         assert read(tmp_path / "a.py") == "x = 1\n"
-        assert not (tmp_path / "bundle.md").exists()
+        assert "```a.py\nx = 1\n```" in read(tmp_path / "bundle.md")
 
     def test_preop_still_skips_binary(self, tmp_path):
         write(tmp_path / "bin.py", b"\x00\x01\x02")
@@ -794,7 +859,7 @@ class TestCrystalEdgeCases:
         write(tmp_path / "greeter.cr", self.CRYSTAL_HEREDOC)
         assert run(BUNDLE, ".", cwd=tmp_path).returncode == 0
         bundle = read(tmp_path / "bundle.md")
-        assert "````crystal\n" in bundle
+        assert "````greeter.cr\n" in bundle
         restore = tmp_path / "restore"
         result = run(UNBUNDLE, tmp_path / "bundle.md", "-o", restore, cwd=tmp_path)
         assert result.returncode == 0, result.stderr
@@ -808,7 +873,7 @@ class TestCrystalEdgeCases:
     def test_five_backtick_content_gets_six(self, tmp_path):
         write(tmp_path / "f.cr", "x = \"`````\"\n")
         run(BUNDLE, ".", cwd=tmp_path)
-        assert "``````crystal\n" in read(tmp_path / "bundle.md")
+        assert "``````f.cr\n" in read(tmp_path / "bundle.md")
 
 
 class TestLineEndingEdgeCases:

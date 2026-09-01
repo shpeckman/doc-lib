@@ -46,39 +46,11 @@ SKIP_DIRS = {
     ".venv", "venv", "dist", "build", "target", ".next",
 }
 
-FENCE_BY_NAME = {
-    "Makefile": "makefile", "makefile": "makefile", "GNUmakefile": "makefile",
-    "Rakefile": "ruby", "Gemfile": "ruby", "Vagrantfile": "ruby",
-    "CMakeLists.txt": "cmake",
-    ".gitignore": "gitignore", ".dockerignore": "dockerignore", ".env": "dotenv",
-    ".bashrc": "bash", ".zshrc": "zsh", ".profile": "sh",
-    ".vimrc": "vim", "vimrc": "vim",
-}
-
-FENCE_BY_SUFFIX = {
-    ".yml": "yaml", ".mk": "makefile", ".dockerfile": "dockerfile",
-    ".pl": "perl", ".pm": "perl", ".cr": "crystal",
-    ".ex": "elixir", ".exs": "elixir", ".jl": "julia",
-    ".tf": "hcl", ".tfvars": "hcl",
-    ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
-    ".cc": "cpp", ".hh": "cpp", ".cxx": "cpp", ".hxx": "cpp", ".hpp": "cpp",
-    ".mjs": "javascript", ".cjs": "javascript",
-    ".mts": "typescript", ".cts": "typescript",
-    ".m": "objectivec", ".mm": "objectivec",
-    ".kt": "kotlin", ".kts": "kotlin", ".sc": "scala",
-    ".adb": "ada", ".ads": "ada",
-    ".clj": "clojure", ".scm": "scheme", ".rkt": "racket", ".el": "elisp",
-    ".erl": "erlang", ".hrl": "erlang", ".lhs": "haskell",
-    ".fs": "fsharp", ".fsx": "fsharp",
-    ".tex": "latex", ".sty": "latex", ".cls": "latex",
-    ".cmd": "bat",
-}
-
 PREFIXES = ("#", "//", "--", ";", "%", '"', "REM")
 ENCODING_RE = re.compile(r"[ \t\f]*#.*?coding[:=][ \t]*[-_.a-zA-Z0-9]+")
 PATH_CHARS_RE = re.compile(r"[\w./\\~ -]+")
 REM_RE = re.compile(r"(?i)REM[ \t]+(.*)")
-FENCE_OPEN_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*(\S*)")
+FENCE_OPEN_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*(.*)")
 SCAN_WINDOW = 4
 
 
@@ -267,16 +239,6 @@ def cmd_add(args):
     return 1 if counts.get("error") else 0
 
 
-def fence_language(path):
-    name = path.name
-    if name in FENCE_BY_NAME:
-        return FENCE_BY_NAME[name]
-    if name.startswith("Dockerfile"):
-        return "dockerfile"
-    suffix = path.suffix.lower()
-    return FENCE_BY_SUFFIX.get(suffix, suffix[1:] if suffix else "")
-
-
 def read_bundle_candidate(path):
     raw = path.read_bytes()
     if b"\0" in raw[:8192]:
@@ -293,6 +255,8 @@ def fence_for(text):
 
 
 def cmd_bundle(args):
+    cwd = Path.cwd().resolve()
+    output_path = args.output.resolve()
     candidates, invalid = collect_candidates(args.paths)
     errors = 0
     for argument in invalid:
@@ -300,7 +264,6 @@ def cmd_bundle(args):
         errors += 1
 
     if not args.no_add:
-        cwd = Path.cwd().resolve()
         add_results = [process_file(candidate, cwd, dry_run=False) for candidate in candidates]
         add_counts = Counter(result.status for result in add_results)
         for result in add_results:
@@ -322,8 +285,7 @@ def cmd_bundle(args):
     for candidate in candidates:
         if candidate.is_symlink() or not candidate.is_file():
             continue
-        prefix = style_for(candidate)
-        if prefix is None:
+        if candidate.resolve() == output_path:
             continue
         try:
             text = read_bundle_candidate(candidate)
@@ -336,22 +298,18 @@ def cmd_bundle(args):
             if args.verbose:
                 print(f"skipped  {candidate}  (binary or not UTF-8)")
             continue
-        if find_path_comment(text.split("\n"), prefix, candidate.name) is None:
-            skipped += 1
-            if args.verbose:
-                print(f"skipped  {candidate}  (no path comment)")
-            continue
+        display_path = display_path_for(candidate, cwd)
         content = text.replace("\r\n", "\n").replace("\r", "\n")
         if not content.endswith("\n"):
             content += "\n"
         fence = fence_for(content)
-        blocks.append(f"{fence}{fence_language(candidate)}\n{content}{fence}")
+        blocks.append(f"{fence}{display_path}\n{content}{fence}")
         bundled += 1
         if args.verbose:
             print(f"bundled  {candidate}")
 
     if not blocks:
-        print("no files with path comments found")
+        print("no bundleable files found")
         return 1 if errors else 0
     try:
         args.output.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
@@ -377,7 +335,7 @@ def parse_blocks(text):
         if not match or (match.group(1)[0] == "`" and "`" in match.group(2)):
             index += 1
             continue
-        fence, language = match.group(1), match.group(2)
+        fence, info = match.group(1), match.group(2).strip()
         index += 1
         content = []
         while index < len(lines) and not is_closing_fence(lines[index], fence[0], len(fence)):
@@ -386,9 +344,22 @@ def parse_blocks(text):
         if index >= len(lines):
             unterminated += 1
             break
-        blocks.append((language, content))
+        blocks.append((info, content))
         index += 1
     return blocks, unterminated
+
+
+def fence_path(info):
+    body = info.strip()
+    if not body or not PATH_CHARS_RE.fullmatch(body):
+        return None
+    if "/" not in body and not PurePosixPath(body).suffix:
+        return None
+    normalized = body.replace("\\", "/")
+    candidate = PurePosixPath(normalized)
+    if candidate.is_absolute() or normalized.startswith("~") or ".." in candidate.parts or not candidate.name:
+        return None
+    return candidate
 
 
 def extract_path(content):
@@ -424,12 +395,12 @@ def cmd_unbundle(args):
 
     seen = set()
     written = overwritten = unchanged = skipped = errors = 0
-    for language, content in blocks:
-        relative = extract_path(content)
+    for info, content in blocks:
+        relative = fence_path(info) or extract_path(content)
         if relative is None:
             skipped += 1
             if args.verbose:
-                print(f" skipped  block ({language or 'no language'}): no valid path comment", file=sys.stderr)
+                print(f" skipped  block ({info or 'no info'}): no valid path", file=sys.stderr)
             continue
         target = (root / Path(*relative.parts)).resolve()
         if not target.is_relative_to(root):

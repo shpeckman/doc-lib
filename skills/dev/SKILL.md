@@ -1,6 +1,6 @@
 ---
 name: dev
-description: Strict mode-based coding assistant behavior (Analysis Mode vs Code Mode) for software development work, with Crystal language support and file-bundle handling. Use whenever the user invokes `//analyze`, `//a`, `//code`, or `//c`, or when doing programming/code tasks where mode-driven behavior is expected. Also use when the user asks to write, run, test, or debug Crystal (.cr) code or use shards (Crystal is NOT preinstalled in the sandbox; this skill installs it without root). Also use when the user provides a file bundle (a Markdown file of fenced code blocks whose first lines are path comments) to be unpacked, or asks to receive project files as a single bundle file. Enforces code quality standards (compiler-friendly, performance-focused, idiomatic, data-driven, no comments), full-file delivery without stubs, and mode stickiness until the user switches commands. Tuned for a Fedora 42 / KDE Plasma / Wayland environment with Crystal 1.21.0.
+description: Strict mode-based coding assistant behavior (Analysis Mode vs Code Mode) for software development work, with Crystal language support and file-bundle handling. Use whenever the user invokes `//analyze`, `//a`, `//code`, or `//c`, or when doing programming/code tasks where mode-driven behavior is expected. Also use when the user asks to write, run, test, or debug Crystal (.cr) code or use shards (Crystal is NOT preinstalled in the sandbox; this skill installs it without root). Also use when the user provides a file bundle (a Markdown file of fenced code blocks whose fence info strings name each file's path) to be unpacked, or asks to receive project files as a single bundle file. Enforces code quality standards (compiler-friendly, performance-focused, idiomatic, data-driven, no comments), full-file delivery without stubs, and mode stickiness until the user switches commands. Tuned for a Fedora 42 / KDE Plasma / Wayland environment with Crystal 1.21.0.
 ---
 
 # Dev
@@ -56,7 +56,7 @@ Apply these in Code Mode (and to any snippet shown in Analysis Mode):
 
 ## File Bundles
 
-`scripts/project_bundler.py` converts between a directory tree and a single Markdown bundle file. Each file in a bundle is a fenced code block tagged with its language (e.g. ```` ```py ````), and each file's content starts with a path comment (e.g. `# src/main.py`) that names where it belongs. Self-contained; runs on stock Python 3, no dependencies.
+`scripts/project_bundler.py` converts between a directory tree and a single Markdown bundle file. Each file in a bundle is a fenced code block whose info string carries the file's relative path (e.g. ```` ```src/main.py ````). Files that support comments also start with a path comment (e.g. `# src/main.py`) as a fallback and for in-editor orientation; comment-less formats (JSON, etc.) are bundled and restored via the fence path alone. Self-contained; runs on stock Python 3, no dependencies.
 
 Three subcommands:
 
@@ -81,9 +81,9 @@ When the user asks for project files as one bundle file:
 
 ### Safety properties (do not weaken them)
 
-- `unbundle` rejects absolute paths, `..` traversal, and symlink escapes; never bypass these checks.
+- `unbundle` resolves each block's destination from the fence path first, falling back to the path comment; both sources get the same checks — rejects absolute paths, `..` traversal, and symlink escapes — never bypass them. Old language-tagged fences (e.g. ```` ```py ````) are not valid paths and fall through to the comment, so old bundles still unbundle.
 - Fence width adapts to backticks in file content — do not hand-edit bundle fences.
-- After any modification to `project_bundler.py`, run the test suite: `python3 -m pytest scripts/test_file_tools.py -q` (157 tests; must stay green).
+- After any modification to `project_bundler.py`, run the test suite: `python3 -m pytest scripts/test_file_tools.py -q` (165 tests; must stay green).
 
 ## Crystal in this sandbox
 
