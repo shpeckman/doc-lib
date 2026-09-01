@@ -4,6 +4,10 @@ All items below were hit and fixed in real sessions (a 1.21.0 self-test battery 
 2026-08-11, plus user-reported compiler errors from a kitty-graphics shard and an
 agent-swarm shard). Read this before writing non-trivial Crystal.
 
+`scripts/crystal_preflight.py` detects 13 of these (rule numbers below) and
+auto-fixes 1, 2, 4, 10, 14, 15 with `--fix`; run it on every `.cr` file before
+delivery. Items verified against Crystal 1.21.0 on 2026-09-02.
+
 ## FFI / C bindings
 
 1. **`lib ... fun` signatures only allow primitive/concrete types.** Bare `Int` is
@@ -18,9 +22,12 @@ agent-swarm shard). Read this before writing non-trivial Crystal.
 
 ## Type system
 
-4. **Abstract numerics can't be union members.** `Int | String` in a method signature
-   fails with `can't use Int in unions yet, use a more specific type`. Use `Int32`
-   (or another concrete type).
+4. **Abstract numerics can't be union members in type declarations.** `@x : Int | String`,
+   `property x : Int | String`, and local `x : Int | String = ...` fail with
+   `can't use Int in unions yet, use a more specific type` — use `Int32` (or another
+   concrete type). Note (re-verified 1.21.0, 2026-09-02): abstract numerics in *def
+   parameter restrictions* (`def f(x : Int | String)`) compile and dispatch fine;
+   only declarations error.
 5. **`UInt8 == Char` compiles but is always false at runtime** (resolves to
    `Object#==`). Compare bytes to ints (`b == 0x5B`) or use `'['.ord`. Silent logic
    bug — the compiler will not warn.

@@ -99,31 +99,21 @@ Everything else works: `gcc`/`cc`/`ld` are present and the bundled tarball's run
 ### Setup (run first, every session)
 
 ```bash
-sh <skill-dir>/scripts/install_crystal.sh
+python3 <skill-dir>/scripts/install_crystal.py
 export PATH="$HOME/crystal/bin:$PATH"
 ```
 
-The script is idempotent: skips if `~/crystal/bin/crystal` exists, else downloads the pinned release (default 1.21.0; override with `CRYSTAL_VERSION`), extracts to `$HOME/crystal`, and smoke-tests a real compile. It prints the PATH line on success.
+The Python installer (stdlib only) is idempotent: skips if `~/crystal/bin/crystal` runs, else downloads the pinned release (default 1.21.0; override with `CRYSTAL_VERSION`), extracts to `$HOME/crystal`, and smoke-tests a real compile. It probes direct-GitHub speed and falls back automatically: gh-proxy.com mirror → openSUSE OBS .deb (it discovers the current package name from the OBS listing and prints the extra `CRYSTAL_PATH`/`CRYSTAL_LIBRARY_PATH` exports the deb layout needs). Downloads resume partial files across retries, archives are magic-byte validated, and it refuses to install onto `/mnt/agents` (noexec). It prints the PATH line(s) on success — run it and export what it prints.
 
 ### Multi-agent / subagent sessions (verified 2026-08-11)
 
-- **Subagents get fresh container views.** A spawned subagent does NOT see the main agent's `~/crystal` install or exported PATH. Any subagent that must compile or spec Crystal must run `install_crystal.sh` itself — put the exact install command into the subagent prompt, don't assume inheritance.
+- **Subagents get fresh container views.** A spawned subagent does NOT see the main agent's `~/crystal` install or exported PATH. Any subagent that must compile or spec Crystal must run `install_crystal.py` itself — put the exact install command into the subagent prompt, don't assume inheritance.
 - **Never share an install via `/mnt/agents`.** Copying the tree there fails: symlinks are rejected (`Operation not supported`), large copies die with I/O errors, and the mount is noexec anyway.
 - **`$HOME` can be wiped mid-session** (observed: `crystal: command not found` after earlier success in the same session). If `crystal` suddenly vanishes, re-run the installer — it is idempotent.
 
-### Fallback install route: openSUSE OBS .deb (verified 2026-08-11)
+### Fallback install route: openSUSE OBS .deb
 
-Use when GitHub and the proxies are all unusable:
-
-```bash
-curl -sL -o /tmp/crystal.deb "https://download.opensuse.org/repositories/devel:/languages:/crystal/Debian_12/amd64/crystal1.21_1.21.0-1+1.1_amd64.deb"
-mkdir -p ~/crystal121 && dpkg-deb -x /tmp/crystal.deb ~/crystal121
-export PATH="$HOME/crystal121/usr/bin:$PATH"
-export CRYSTAL_PATH="$HOME/crystal121/usr/share/crystal/src"
-export CRYSTAL_LIBRARY_PATH="$HOME/crystal121/usr/lib/crystal"
-```
-
-The deb's binaries are fully static (no missing libs). Gotcha: the deb puts `libgc.a` directly in `usr/lib/crystal`, **not** in a `lib/` subdir — if `CRYSTAL_LIBRARY_PATH` points elsewhere, linking fails with `cannot find -lgc`.
+The installer already includes this as its last-resort route (no `dpkg` needed — it parses the ar archive itself). The deb's binaries are fully static. Gotcha: the deb puts `libgc.a` directly in `usr/lib/crystal`, **not** in a `lib/` subdir — the installer detects this layout and prints the `CRYSTAL_LIBRARY_PATH`/`CRYSTAL_PATH` exports required, without which linking fails with `cannot find -lgc`.
 
 ### Usage
 
@@ -137,4 +127,12 @@ Deliver `.cr` sources to `/mnt/agents/output/` normally (they are data, not exec
 
 ### Writing Crystal code
 
-When authoring or debugging Crystal (especially FFI `lib` bindings, union types, macros), first read `references/crystal-pitfalls.md` — a verified list of compile/runtime gotchas hit in this sandbox (Crystal 1.21.0), e.g. bare `Int` rejected in `lib fun` signatures and in union types, `UInt8 == Char` silently always false, `yield` illegal inside captured blocks.
+When authoring or debugging Crystal (especially FFI `lib` bindings, union types, macros), first read `references/crystal-pitfalls.md` — a verified list of compile/runtime gotchas hit in this sandbox (Crystal 1.21.0), e.g. bare `Int` rejected in `lib fun` signatures, `UInt8 == Char` silently always false, `yield` illegal inside captured blocks.
+
+Before delivering any `.cr` file, run the preflight linter and fix what it reports:
+
+```bash
+python3 <skill-dir>/scripts/crystal_preflight.py --fix FILE.cr...
+```
+
+It detects 13 of the documented pitfalls (rule numbers match the pitfall list) and auto-fixes the safe ones: abstract numerics in `lib fun` signatures and union type declarations, `.pointer.closure`, `Time.monotonic`, trailing `while`/`until` modifiers, and `raise ..., cause:`. Warn-only findings (silent `UInt8 == Char`, assignment in `when`, `yield` in captured blocks, macro tags in comments, `@type.instance_vars` at include time, `BigFloat#to_s(precision)`, `IO.select` timeouts) need manual restructuring — see the referenced pitfall entry.
