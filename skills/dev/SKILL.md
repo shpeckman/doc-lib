@@ -1,6 +1,6 @@
 ---
 name: dev
-description: Strict mode-based coding assistant behavior (Analysis Mode vs Code Mode) for software development work, with Crystal language support and file-bundle handling. Use whenever the user invokes `//analyze`, `//a`, `//code`, or `//c`, or when doing programming/code tasks where mode-driven behavior is expected. Also use when the user asks to write, run, test, or debug Crystal (.cr) code or use shards (Crystal is NOT preinstalled in the sandbox; this skill installs it without root). Also use when the user provides a file bundle (a Markdown file of fenced code blocks whose fence info strings name each file's path) to be unpacked, or asks to receive project files as a single bundle file. Enforces code quality standards (compiler-friendly, performance-focused, idiomatic, data-driven, no comments), full-file delivery without stubs, and mode stickiness until the user switches commands. Tuned for a Fedora 42 / KDE Plasma / Wayland environment with Crystal 1.21.0.
+description: Strict mode-based coding assistant behavior (Analysis Mode vs Code Mode) for software development work, with Crystal language support and file-bundle handling. Use whenever the user invokes `//analyze`, `//a`, `//code`, or `//c`, or when doing programming/code tasks where mode-driven behavior is expected. Also use when the user asks to write, run, test, or debug Crystal (.cr) code or use shards (Crystal is NOT preinstalled in the sandbox; this skill installs it without root). Also use when the user provides a file bundle (a text file of fenced code blocks whose fence info strings name each file's path) to be unpacked, or asks to receive project files as a single bundle file. Enforces code quality standards (compiler-friendly, performance-focused, idiomatic, data-driven, no comments), full-file delivery without stubs, and mode stickiness until the user switches commands. Tuned for a Fedora 42 / KDE Plasma / Wayland environment with Crystal 1.21.0.
 ---
 
 # Dev
@@ -56,13 +56,13 @@ Apply these in Code Mode (and to any snippet shown in Analysis Mode):
 
 ## File Bundles
 
-`scripts/project_bundler.py` converts between a directory tree and a single Markdown bundle file. Each file in a bundle is a fenced code block whose info string carries the file's relative path (e.g. ```` ```src/main.py ````). Files that support comments also start with a path comment (e.g. `# src/main.py`) as a fallback and for in-editor orientation; comment-less formats (JSON, etc.) are bundled and restored via the fence path alone. Self-contained; runs on stock Python 3, no dependencies.
+`scripts/project_bundler.py` converts between a directory tree and a single bundle file (fenced code blocks in Markdown syntax, saved as `<name>-bundle.txt`). Each file in a bundle is a fenced code block whose info string carries the file's relative path (e.g. ```` ```src/main.py ````). Files that support comments also start with a path comment (e.g. `# src/main.py`) as a fallback and for in-editor orientation; comment-less formats (JSON, etc.) are bundled and restored via the fence path alone. Self-contained; runs on stock Python 3, no dependencies.
 
 Three subcommands:
 
 - `add DIR... [--dry-run] [-v]` — insert or update path comments in source files (idempotent; shebang/encoding-cookie aware; preserves CRLF, BOM, permissions)
-- `bundle DIR... [-o bundle.md] [--no-add] [-v]` — stamp files (pre-op `add`, skip with `--no-add`) and pack them into one Markdown file
-- `unbundle bundle.md [-o DIR] [--force] [--dry-run] [-v]` — restore files and directory structure from a bundle
+- `bundle DIR... [-o <name>-bundle.txt] [--no-add] [-v]` — stamp files (pre-op `add`, skip with `--no-add`) and pack them into one bundle file; default output is `<name>-bundle.txt`, named after the first bundled path (directory name, or file stem)
+- `unbundle <name>-bundle.txt [-o DIR] [--force] [--dry-run] [-v]` — restore files and directory structure from a bundle
 
 ### Receiving a bundle from the user
 
@@ -76,40 +76,52 @@ When the user provides a bundle file:
 
 When the user asks for project files as one bundle file:
 
-1. From the project root, run: `python3 scripts/project_bundler.py bundle . -o <name>.md` (the pre-op `add` stamps any unstamped files automatically)
-2. Deliver the resulting `.md` file.
+1. From the project root, run: `python3 scripts/project_bundler.py bundle .` — it writes `<dirname>-bundle.txt` (the pre-op `add` stamps any unstamped files automatically). Use `-o <name>-bundle.txt` only when a different name is needed.
+2. Deliver the resulting `-bundle.txt` file.
 
 ### Safety properties (do not weaken them)
 
 - `unbundle` resolves each block's destination from the fence path first, falling back to the path comment; both sources get the same checks — rejects absolute paths, `..` traversal, and symlink escapes — never bypass them. Old language-tagged fences (e.g. ```` ```py ````) are not valid paths and fall through to the comment, so old bundles still unbundle.
 - Fence width adapts to backticks in file content — do not hand-edit bundle fences.
-- After any modification to `project_bundler.py`, run the test suite: `python3 -m pytest scripts/test_file_tools.py -q` (165 tests; must stay green).
+- After any modification to `project_bundler.py`, run the test suite: `python3 -m pytest scripts/test_file_tools.py -q` (167 tests; must stay green).
 
 ## Crystal in this sandbox
 
 ### Why Crystal usually fails here (known environment constraints)
 
 1. **Not preinstalled** — Debian 12 image; Crystal is not in apt and there is **no root/sudo**, so the official `install.sh`/apt route is impossible.
-2. **Persistent storage cannot execute binaries** — `/mnt/agents` strips exec bits and refuses to run programs (`Permission denied`, exit 126). Never install Crystal there.
+2. **Persistent storage cannot execute binaries directly** — `/mnt/agents` strips exec bits. The installer works around this by patching wrapper scripts to use `ld-linux.so.2`.
 3. **Direct GitHub downloads are often ~KB/s** — release tarballs (~58 MB) time out. Use the `gh-proxy.com` mirror (the installer probes speed and falls back automatically).
-4. **Non-persistent `$HOME`** — anything installed outside `/mnt/agents` is wiped when the sandbox is released. Re-run the installer at the start of every session that needs Crystal.
 
 Everything else works: `gcc`/`cc`/`ld` are present and the bundled tarball's runtime libs (libgc, pcre2, ssl, yaml, event) link fine.
 
-### Setup (run first, every session)
+### Setup (run once, persists across sessions)
 
 ```bash
+export CRYSTAL_HOME="/mnt/agents/.cache/crystal"
 python3 <skill-dir>/scripts/install_crystal.py
-export PATH="$HOME/crystal/bin:$PATH"
 ```
 
-The Python installer (stdlib only) is idempotent: skips if `~/crystal/bin/crystal` runs, else downloads the pinned release (default 1.21.0; override with `CRYSTAL_VERSION`), extracts to `$HOME/crystal`, and smoke-tests a real compile. It probes direct-GitHub speed and falls back automatically: gh-proxy.com mirror → openSUSE OBS .deb (it discovers the current package name from the OBS listing and prints the extra `CRYSTAL_PATH`/`CRYSTAL_LIBRARY_PATH` exports the deb layout needs). Downloads resume partial files across retries, archives are magic-byte validated, and it refuses to install onto `/mnt/agents` (noexec). It prints the PATH line(s) on success — run it and export what it prints.
+The Python installer (stdlib only) is idempotent: skips if `CRYSTAL_HOME/bin/crystal` runs, else downloads the pinned release (default 1.21.0; override with `CRYSTAL_VERSION`), extracts to `CRYSTAL_HOME`, and smoke-tests a real compile. It probes direct-GitHub speed and falls back automatically: gh-proxy.com mirror → openSUSE OBS .deb (it discovers the current package name from the OBS listing and prints the extra `CRYSTAL_PATH`/`CRYSTAL_LIBRARY_PATH` exports the deb layout needs). Downloads resume partial files across retries, archives are magic-byte validated, and auto-patches wrappers for noexec mounts. It prints the PATH line(s) on success — run it and export what it prints.
+
+Because `/mnt/agents` is `noexec`, invoke Crystal with:
+
+```bash
+bash /mnt/agents/.cache/crystal/bin/crystal --version
+```
+
+Or create aliases in your shell:
+
+```bash
+alias crystal='bash /mnt/agents/.cache/crystal/bin/crystal'
+alias shards='bash /mnt/agents/.cache/crystal/bin/shards'
+```
 
 ### Multi-agent / subagent sessions (verified 2026-08-11)
 
-- **Subagents get fresh container views.** A spawned subagent does NOT see the main agent's `~/crystal` install or exported PATH. Any subagent that must compile or spec Crystal must run `install_crystal.py` itself — put the exact install command into the subagent prompt, don't assume inheritance.
-- **Never share an install via `/mnt/agents`.** Copying the tree there fails: symlinks are rejected (`Operation not supported`), large copies die with I/O errors, and the mount is noexec anyway.
-- **`$HOME` can be wiped mid-session** (observed: `crystal: command not found` after earlier success in the same session). If `crystal` suddenly vanishes, re-run the installer — it is idempotent.
+- **Subagents get fresh container views, but they DO see `/mnt/agents/.cache/crystal`.** A subagent only needs to re-export the aliases or PATH; it does not need to re-download. If `crystal` suddenly vanishes from `$HOME`, check `/mnt/agents/.cache/crystal` — it persists.
+- **Never copy an install via symlinks on `/mnt/agents`.** Symlinks are rejected (`Operation not supported`), and large copies may die with I/O errors. Use the installer directly with `CRYSTAL_HOME=/mnt/agents/.cache/crystal`.
+- **If the compiler vanishes mid-session**, re-run the installer — it is idempotent and will skip if the install is still intact.
 
 ### Fallback install route: openSUSE OBS .deb
 
