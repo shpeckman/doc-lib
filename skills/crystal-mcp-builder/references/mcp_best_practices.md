@@ -5,7 +5,7 @@ Language-agnostic guidelines, adapted for Crystal servers built with the crystal
 ## Quick Reference
 
 ### Server Naming
-- **Crystal shard**: `{service}-mcp` (e.g., `slack-mcp`) — matches shard naming rules and the vendored `mcp` shard itself
+- **Crystal shard**: `{service}-mcp` (e.g., `slack-mcp`) — matches shard naming rules and the `mcp` shard itself
 
 ### Tool Naming
 - snake_case with service prefix

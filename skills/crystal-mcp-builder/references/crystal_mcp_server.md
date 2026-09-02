@@ -1,6 +1,6 @@
 # Crystal MCP Server Implementation Guide
 
-Complete guide to building MCP servers in Crystal with the crystal-mcp shard (protocol version 2026-07-28). The shard source, full API README, and a working template ship with this skill under `assets/`.
+Complete guide to building MCP servers in Crystal with the crystal-mcp shard (protocol version 2026-07-28). The shard lives at https://github.com/shpeckman/crystal-mcp — source, full API README, and runnable `examples/` are all there.
 
 ## Overview
 
@@ -14,7 +14,7 @@ crystal-mcp provides the entire protocol stack: typed messages for every 2026-07
 require "mcp"
 ```
 
-The shard is vendored (see Project Structure) — no published package to fetch.
+The shard is a git dependency (see Project Structure) — fetched from GitHub by `shards install`.
 
 ### Server Initialization
 
@@ -83,11 +83,11 @@ Constraints that matter:
 
 ## Project Structure
 
-Start from `assets/server-template/` and vendor the shard:
+Create the project layout yourself (the repo's `examples/` directory has working servers for reference):
 
 ```
 myservice-mcp/
-├── shard.yml               # declares path dependency on vendor/mcp
+├── shard.yml               # declares git dependency on the crystal-mcp shard
 ├── src/
 │   ├── app.cr              # build_server : MCP::Server — all registration lives here
 │   ├── server.cr           # entrypoint: build_server + transport selection
@@ -96,22 +96,31 @@ myservice-mcp/
 │       └── formatters.cr   # JSON/Markdown formatting helpers
 ├── spec/
 │   └── server_spec.cr      # in-process integration specs
-├── vendor/
-│   └── mcp/                # copy of assets/crystal-mcp (src/, shard.yml, README.md)
 └── lib/
-    └── mcp -> ../../vendor/mcp   # created by `shards install`
+    └── mcp                 # crystal-mcp shard, fetched by `shards install`
 ```
 
-Setup commands:
+Setup:
 
 ```bash
-cp -r <skill>/assets/server-template myservice-mcp
-mkdir -p myservice-mcp/vendor
-cp -r <skill>/assets/crystal-mcp myservice-mcp/vendor/mcp
+shards init app myservice-mcp
 cd myservice-mcp
-shards install        # links lib/mcp -> vendor/mcp
-# no symlink support (e.g. building under /mnt/agents is forbidden anyway)? then instead:
-# mkdir -p lib && cp -r vendor/mcp lib/mcp
+```
+
+Declare the dependency in `shard.yml`:
+
+```yaml
+dependencies:
+  mcp:
+    github: shpeckman/crystal-mcp
+```
+
+```bash
+shards install        # clones the shard into lib/mcp
+# GitHub unreachable from the build host? vendor a clone instead:
+#   git clone https://github.com/shpeckman/crystal-mcp vendor/mcp
+# and use `path: vendor/mcp` in shard.yml
+# (on filesystems without symlink support, copy vendor/mcp to lib/mcp)
 ```
 
 `require "mcp"` resolves through the `lib` entry on `CRYSTAL_PATH` in both cases. Keep ALL registration in `app.cr`'s `build_server` method so specs can construct the same server in-process — never register tools at the top level of the entrypoint.
@@ -477,7 +486,7 @@ else
 end
 ```
 
-Field schema classes: `StringSchema` (`format:`, `min_length:`, `max_length:`), `NumberSchema` / `IntegerSchema` (`NumberSchema.integer(...)`), `BooleanSchema`, `EnumSchema` (single-select), `MultiSelectSchema`. All must be cast `.as(MCP::PrimitiveSchema)` when mixed in one `properties` hash. See `assets/crystal-mcp/README.md` for the full list.
+Field schema classes: `StringSchema` (`format:`, `min_length:`, `max_length:`), `NumberSchema` / `IntegerSchema` (`NumberSchema.integer(...)`), `BooleanSchema`, `EnumSchema` (single-select), `MultiSelectSchema`. All must be cast `.as(MCP::PrimitiveSchema)` when mixed in one `properties` hash. See the shard README (https://github.com/shpeckman/crystal-mcp/blob/main/README.md) for the full list.
 
 ### Roots (ask where the client is working)
 
@@ -534,7 +543,7 @@ session = server.open_session(MCP::IOTransport.new(in_io, out_io))  # spawned, n
 ## Building and Running
 
 ```bash
-shards install                                   # links the vendored shard
+shards install                                   # fetches the crystal-mcp shard
 mkdir -p bin
 crystal build src/server.cr -o bin/server        # development build
 crystal build src/server.cr -o bin/server --release   # production

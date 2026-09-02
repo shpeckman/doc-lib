@@ -1,6 +1,6 @@
 ---
 name: crystal-mcp-builder
-description: Guide for creating high-quality MCP (Model Context Protocol) servers in Crystal using the bundled crystal-mcp shard (protocol version 2026-07-28). Use when the user wants to build an MCP server or MCP tools in Crystal, expose an external API, service, or database to LLMs through MCP from a Crystal codebase, or asks about the crystal-mcp shard, Crystal MCP development, Crystal stdio/Streamable HTTP MCP transports, or creating evaluations for an MCP server.
+description: Guide for creating high-quality MCP (Model Context Protocol) servers in Crystal using the crystal-mcp shard (protocol version 2026-07-28, https://github.com/shpeckman/crystal-mcp). Use when the user wants to build an MCP server or MCP tools in Crystal, expose an external API, service, or database to LLMs through MCP from a Crystal codebase, or asks about the crystal-mcp shard, Crystal MCP development, Crystal stdio/Streamable HTTP MCP transports, or creating evaluations for an MCP server.
 ---
 
 # Crystal MCP Server Development Guide
@@ -9,7 +9,7 @@ description: Guide for creating high-quality MCP (Model Context Protocol) server
 
 Create MCP (Model Context Protocol) servers in Crystal that enable LLMs to interact with external services through well-designed tools. The quality of an MCP server is measured by how well it enables LLMs to accomplish real-world tasks.
 
-All servers built with this skill use the bundled **crystal-mcp shard** (`assets/crystal-mcp/`), a complete implementation of MCP protocol version **2026-07-28** for Crystal >= 1.21: typed protocol surface, JSON-RPC sessions, stdio and Streamable HTTP transports, an ergonomic server DSL, and a full client for testing.
+All servers built with this skill use the **crystal-mcp shard** (https://github.com/shpeckman/crystal-mcp), a complete implementation of MCP protocol version **2026-07-28** for Crystal >= 1.21: typed protocol surface, JSON-RPC sessions, stdio and Streamable HTTP transports, an ergonomic server DSL, and a full client for testing.
 
 ---
 
@@ -58,7 +58,7 @@ Key pages to review:
 
 - **MCP Best Practices**: [📋 View Best Practices](./references/mcp_best_practices.md) - Core guidelines (load first)
 - **Crystal Implementation Guide**: [🔮 Crystal Guide](./references/crystal_mcp_server.md) - Complete crystal-mcp patterns and examples (load during Phase 2)
-- The vendored shard's own README at `assets/crystal-mcp/README.md` is a full API reference — consult it for exact type signatures when the Crystal Guide is not enough.
+- The shard's own README (https://github.com/shpeckman/crystal-mcp/blob/main/README.md) is a full API reference — consult it for exact type signatures when the Crystal Guide is not enough.
 
 #### 1.4 Plan Your Implementation
 
@@ -77,9 +77,9 @@ Prioritize comprehensive API coverage. List endpoints to implement, starting wit
 Detailed instructions live in the Crystal Guide; the short version:
 
 1. **Crystal toolchain**: verify `crystal --version` is >= 1.21. If Crystal is missing, see "Environment Setup" in [🔮 Crystal Guide](./references/crystal_mcp_server.md). If the `dev` skill is available in this session, prefer its `install_crystal.py` installer and `crystal_preflight.py` linter.
-2. **Copy the template**: copy `assets/server-template/` into the project directory.
-3. **Vendor the shard**: copy `assets/crystal-mcp/` to `vendor/mcp` inside the project, then run `shards install` (it links `lib/mcp` from the declared path dependency). On filesystems without symlink support, copy `vendor/mcp` to `lib/mcp` instead — `require "mcp"` resolves either way.
-4. **Rename** `myservice` / `myservice-mcp` throughout to the actual service (shard name convention: `{service}-mcp`).
+2. **Scaffold the project**: create the `src/app.cr` / `src/server.cr` / `spec/` layout shown in the Crystal Guide; the repo's `examples/` directory has working servers to crib from.
+3. **Add the shard**: declare `mcp: github: shpeckman/crystal-mcp` as a dependency in `shard.yml`, then run `shards install`. If GitHub is unreachable from the build host, `git clone https://github.com/shpeckman/crystal-mcp vendor/mcp` and use a `path: vendor/mcp` dependency instead.
+4. **Name** the shard `{service}-mcp` — both `name:` in `shard.yml` and the `MCP::Implementation` name.
 
 #### 2.2 Implement Core Infrastructure
 
@@ -128,7 +128,7 @@ Review for:
 #### 3.2 Build and Test
 
 - Build: `mkdir -p bin && crystal build src/server.cr -o bin/server` (add `--release` for production)
-- Run specs: `crystal spec` (the template ships an in-process `IO.pipe` integration spec)
+- Run specs: `crystal spec` (write in-process `IO.pipe` integration specs — pattern in the Crystal Guide)
 - If the `dev` skill is present, run its preflight linter on every `.cr` file: `python3 <dev-skill>/scripts/crystal_preflight.py FILE.cr...` (without `--fix` on files containing the word "while" in string literals)
 - Test with MCP Inspector: `npx @modelcontextprotocol/inspector ./bin/server`
 - Work through the full quality checklist in the Crystal Guide before considering the server done
@@ -217,7 +217,7 @@ Load these resources as needed during development:
   - Subscriptions, notifications, sampling, elicitation, roots
   - stdio + Streamable HTTP transports
   - Error handling, testing patterns, Crystal pitfalls, quality checklist
-- `assets/crystal-mcp/README.md` - Full API reference for the vendored shard
+- The shard's README (https://github.com/shpeckman/crystal-mcp/blob/main/README.md) - Full API reference for the shard
 
 ### Evaluation Guide (Load During Phase 4)
 - [✅ Evaluation Guide](./references/evaluation.md) - Complete evaluation creation guide:
@@ -229,6 +229,5 @@ Load these resources as needed during development:
 
 ## 📦 Bundled Resources
 
-- `assets/crystal-mcp/` - The crystal-mcp shard (source + shard.yml + README). Vendor into projects as `vendor/mcp`.
-- `assets/server-template/` - Minimal working server project (shard.yml, `src/app.cr`, `src/server.cr`, `spec/server_spec.cr`).
+- The crystal-mcp shard lives at https://github.com/shpeckman/crystal-mcp (source, full API README, runnable `examples/`). Add it as a shard dependency; clone the repo when you need to read exact type signatures locally.
 - `scripts/evaluation.py`, `scripts/connections.py` - Language-agnostic MCP evaluation harness (Python; needs `anthropic` + `mcp` packages).
