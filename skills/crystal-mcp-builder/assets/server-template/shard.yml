@@ -1,0 +1,10 @@
+name: myservice-mcp
+version: 0.1.0
+
+crystal: ">= 1.21.0"
+
+dependencies:
+  mcp:
+    path: vendor/mcp
+
+license: MIT
