@@ -78,7 +78,7 @@ Detailed instructions live in the Crystal Guide; the short version:
 
 1. **Crystal toolchain**: verify `crystal --version` is >= 1.21. If Crystal is missing, see "Environment Setup" in [🔮 Crystal Guide](./references/crystal_mcp_server.md). If the `dev` skill is available in this session, prefer its `install_crystal.py` installer and `crystal_preflight.py` linter.
 2. **Scaffold the project**: create the `src/app.cr` / `src/server.cr` / `spec/` layout shown in the Crystal Guide; the repo's `examples/` directory has working servers to crib from.
-3. **Add the shard**: declare `mcp: github: shpeckman/crystal-mcp` as a dependency in `shard.yml`, then run `shards install`. If GitHub is unreachable from the build host, `git clone https://github.com/shpeckman/crystal-mcp vendor/mcp` and use a `path: vendor/mcp` dependency instead.
+3. **Add the shard**: declare `crystal-mcp: github: shpeckman/crystal-mcp` as a dependency in `shard.yml` (the key must match the shard's `name: crystal-mcp`, otherwise `shards install` fails), then run `shards install`; code does `require "crystal-mcp"`. If GitHub is unreachable from the build host, `git clone https://github.com/shpeckman/crystal-mcp vendor/crystal-mcp` and use a `path: vendor/crystal-mcp` dependency instead.
 4. **Name** the shard `{service}-mcp` — both `name:` in `shard.yml` and the `MCP::Implementation` name.
 
 #### 2.2 Implement Core Infrastructure

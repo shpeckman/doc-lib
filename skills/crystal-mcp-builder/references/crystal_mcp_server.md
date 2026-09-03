@@ -11,10 +11,10 @@ crystal-mcp provides the entire protocol stack: typed messages for every 2026-07
 ### Require
 
 ```crystal
-require "mcp"
+require "crystal-mcp"
 ```
 
-The shard is a git dependency (see Project Structure) — fetched from GitHub by `shards install`.
+The shard is a git dependency (see Project Structure) — fetched from GitHub by `shards install`. Its shard `name` is `crystal-mcp`, so both the `shard.yml` dependency key and the `require` use `crystal-mcp`, never `mcp`.
 
 ### Server Initialization
 
@@ -97,7 +97,7 @@ myservice-mcp/
 ├── spec/
 │   └── server_spec.cr      # in-process integration specs
 └── lib/
-    └── mcp                 # crystal-mcp shard, fetched by `shards install`
+    └── crystal-mcp         # crystal-mcp shard, fetched by `shards install`
 ```
 
 Setup:
@@ -111,19 +111,19 @@ Declare the dependency in `shard.yml`:
 
 ```yaml
 dependencies:
-  mcp:
+  crystal-mcp:
     github: shpeckman/crystal-mcp
 ```
 
 ```bash
-shards install        # clones the shard into lib/mcp
+shards install        # clones the shard into lib/crystal-mcp
 # GitHub unreachable from the build host? vendor a clone instead:
-#   git clone https://github.com/shpeckman/crystal-mcp vendor/mcp
-# and use `path: vendor/mcp` in shard.yml
-# (on filesystems without symlink support, copy vendor/mcp to lib/mcp)
+#   git clone https://github.com/shpeckman/crystal-mcp vendor/crystal-mcp
+# and use `path: vendor/crystal-mcp` in shard.yml
+# (on filesystems without symlink support, copy vendor/crystal-mcp to lib/crystal-mcp)
 ```
 
-`require "mcp"` resolves through the `lib` entry on `CRYSTAL_PATH` in both cases. Keep ALL registration in `app.cr`'s `build_server` method so specs can construct the same server in-process — never register tools at the top level of the entrypoint.
+The dependency key must be `crystal-mcp` — shards rejects a dependency whose key differs from the shard's `name`. `require "crystal-mcp"` resolves through the `lib` entry on `CRYSTAL_PATH` in both cases. Keep ALL registration in `app.cr`'s `build_server` method so specs can construct the same server in-process — never register tools at the top level of the entrypoint.
 
 ## Server Naming Convention
 
@@ -473,7 +473,7 @@ result = ctx.session.elicit(MCP::ElicitFormParams.new(
   message: "Confirm deployment target",
   requested_schema: MCP::ElicitFormSchema.new(
     properties: {
-      "environment" => MCP::EnumSchema.new(values: ["staging", "production"]).as(MCP::PrimitiveSchema),
+      "environment" => MCP::UntitledSingleSelectEnumSchema.new(["staging", "production"]).as(MCP::PrimitiveSchema),
       "confirm"     => MCP::BooleanSchema.new(default: false).as(MCP::PrimitiveSchema),
     },
     required: ["environment", "confirm"])))
@@ -486,7 +486,7 @@ else
 end
 ```
 
-Field schema classes: `StringSchema` (`format:`, `min_length:`, `max_length:`), `NumberSchema` / `IntegerSchema` (`NumberSchema.integer(...)`), `BooleanSchema`, `EnumSchema` (single-select), `MultiSelectSchema`. All must be cast `.as(MCP::PrimitiveSchema)` when mixed in one `properties` hash. See the shard README (https://github.com/shpeckman/crystal-mcp/blob/main/README.md) for the full list.
+Field schema classes: `StringSchema` (`format:`, `min_length:`, `max_length:`), `NumberSchema` (`NumberSchema.integer(...)` for integers), `BooleanSchema`, the single-select enums (`UntitledSingleSelectEnumSchema.new(values)`, `TitledSingleSelectEnumSchema.new([MCP::EnumOption.new("value", title: "...")])`, legacy `LegacyTitledEnumSchema`), and the multi-selects (`UntitledMultiSelectEnumSchema.values([...])`, `TitledMultiSelectEnumSchema.options([...])`). All must be cast `.as(MCP::PrimitiveSchema)` when mixed in one `properties` hash. See the shard README (https://github.com/shpeckman/crystal-mcp/blob/main/README.md) for the full list.
 
 ### Roots (ask where the client is working)
 
