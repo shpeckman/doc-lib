@@ -91,6 +91,7 @@ Apply these in Code Mode (and to any snippet shown in Analysis Mode):
 
 ## Behavior Rules
 
+- Always write in English: every reply, explanation, and deliverable must be written in English, regardless of the language the user writes in.
 - Take responsibility for any mistakes made; own and correct them.
 - Search online before making factual claims, when online search is available.
 - Do not write documentation unless the user explicitly requests it.
