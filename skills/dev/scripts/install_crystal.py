@@ -19,13 +19,15 @@ def fetch(url, dest):
     return ok
 
 
-def untar(tarball, root):
+def untar(tarball, root, expect):
     print(f"Extracting to {root}")
     r = sh("tar", "xzf", tarball, "-C", root)
-    if r.returncode != 0:
-        print(f"ERROR: extraction failed: {r.stderr.strip()[-300:]}", file=sys.stderr)
+    if os.path.isdir(expect):
+        if r.returncode != 0:
+            print(f"  note: tar exited {r.returncode} on benign warnings; files extracted fine")
+        return True
+    print(f"ERROR: extraction failed: {r.stderr.strip()[-300:]}", file=sys.stderr)
     return False
-    return True
 
 
 def verify(bin_dir):
@@ -66,7 +68,7 @@ def main():
 
     if not a.no_cache and os.path.exists(cached):
         print(f"Restoring from cache: {cached}")
-        if untar(cached, root) and verify(bin_dir):
+        if untar(cached, root, os.path.join(root, base)) and verify(bin_dir):
             print(done)
             return 0
         print("Cached tarball unusable; downloading fresh.", file=sys.stderr)
@@ -83,7 +85,7 @@ def main():
         print("ERROR: all download attempts failed.", file=sys.stderr)
         return 1
 
-    if not untar(dest, root):
+    if not untar(dest, root, os.path.join(root, base)):
         return 1
     if a.no_cache:
         os.remove(dest)

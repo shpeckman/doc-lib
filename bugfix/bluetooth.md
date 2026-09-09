@@ -1,9 +1,77 @@
-This issue is a known behavior on Fedora 42, usually caused by a handshake conflict between BlueZ, your audio router (WirePlumber/PipeWire), and specific Bluetooth hardware features. When you connect, the system creates an initial connection, but drops it immediately when negotiating the audio profile (A2DP/HSP). [1] (https://discussion.fedoraproject.org/t/bluetooth-audio-immediately-disconnects/161041), [2] (https://discussion.fedoraproject.org/t/bluetooth-is-extremely-bugged-out-in-f42-kde-also-in-f41-kde/158644), [3] (https://www.reddit.com/r/Fedora/comments/1lnjvvi/issue_summary_intermittent_bluetooth_audio/), [4] (https://discussion.fedoraproject.org/t/solved-bluetooth-headphones-disconnecting-on-fedora-kde-mediatek-adapters/188290)Here are the most effective fixes, ordered from the simplest to the most advanced.1. Disable the "FastConnectable" Feature (Most Common Fix)A mismatch between Linux's modern Bluetooth stack and certain hardware controllers (like MediaTek or Intel) often triggers instant disconnects. Disabling FastConnectable solves this. [1] (https://discussion.fedoraproject.org/t/solved-bluetooth-headphones-disconnecting-on-fedora-kde-mediatek-adapters/188290)Open your terminal and edit your primary Bluetooth configuration file:bashsudo nano /etc/bluetooth/main.conf
-Use code with caution.Use Ctrl + W to search for the following line:ini#FastConnectable = false
-Use code with caution.Remove the # symbol to uncomment it, and make sure it is explicitly set to false:iniFastConnectable = false
-Use code with caution.Save and exit (Ctrl + O, Enter, then Ctrl + X).Restart the Bluetooth service:bashsudo systemctl restart bluetooth
-Use code with caution. [1] (https://discussion.fedoraproject.org/t/solved-bluetooth-headphones-disconnecting-on-fedora-kde-mediatek-adapters/188290)2. Turn Off WirePlumber Audio Profile AutoswitchingA bug in recent WirePlumber packages can crash or drop connections the moment an earbud tries to cycle through high-fidelity (A2DP) and headset (HSP/HFP) profiles simultaneously. [1] (https://www.reddit.com/r/archlinux/comments/1qj8fzo/connecting_my_bluetooth_headphones_kicks_me_out/)Run this command in the terminal to prevent the auto-switch loop: [1] (https://www.reddit.com/r/linuxquestions/comments/1pxsngd/bluetooth_headphones_immediately_disconnect_on/), [2] (https://www.reddit.com/r/archlinux/comments/1qj8fzo/connecting_my_bluetooth_headphones_kicks_me_out/)bashwpctl settings --save bluetooth.autoswitch-to-headset-profile false
-Use code with caution.Note: If you need to revert this later, change false to true.3. Clear the BlueZ Cache and Force Re-PairingSometimes corrupted state data cached in your local system cache causes persistent drops. Clearing it forces Fedora to create a fresh handshake: [1] (https://www.reddit.com/r/archlinux/comments/1netjbd/bluetooth_connects_and_then_disconnects_seconds/), [2] (https://knowledgebase.frame.work/fedora-bluetooth-troubleshooting-guide-Byd2DtSCs)bashsudo systemctl stop bluetooth
+## Resolving Immediate Bluetooth Disconnects on Fedora 42
+
+This issue is a known behavior on Fedora 42, usually caused by a handshake conflict between BlueZ, your audio router (WirePlumber/PipeWire), and specific Bluetooth hardware features. When you connect, the system creates an initial connection but drops it immediately when negotiating the audio profile (A2DP/HSP).
+Here are the most effective fixes, ordered from the simplest to the most advanced.
+
+### 1. Disable the "FastConnectable" Feature (Most Common Fix)
+
+A mismatch between Linux's modern Bluetooth stack and certain hardware controllers (like MediaTek or Intel) often triggers instant disconnects. Disabling `FastConnectable` solves this.
+
+Open your terminal and edit your primary Bluetooth configuration file:
+
+```bash
+sudo nano /etc/bluetooth/main.conf
+```
+
+Use `Ctrl + W` to search for the following line:
+
+```ini
+#FastConnectable = false
+
+```
+
+Remove the `#` symbol to uncomment it, and make sure it is explicitly set to false:
+
+```ini
+FastConnectable = false
+
+```
+
+Save and exit (`Ctrl + O`, `Enter`, then `Ctrl + X`), then restart the Bluetooth service:
+
+```bash
+sudo systemctl restart bluetooth
+
+```
+
+### 2. Turn Off WirePlumber Audio Profile Autoswitching
+
+A bug in recent WirePlumber packages can crash or drop connections the moment an earbud tries to cycle through high-fidelity (A2DP) and headset (HSP/HFP) profiles simultaneously.
+
+Run this command in the terminal to prevent the auto-switch loop:
+
+```bash
+wpctl settings --save bluetooth.autoswitch-to-headset-profile false
+
+```
+
+> **Note:** If you need to revert this later, change `false` to `true`.
+
+### 3. Clear the BlueZ Cache and Force Re-Pairing
+
+Sometimes corrupted state data cached in your local system cache causes persistent drops. Clearing it forces Fedora to create a fresh handshake:
+
+```bash
+sudo systemctl stop bluetooth
 sudo rm -rf /var/lib/bluetooth/*
 sudo systemctl start bluetooth
-Use code with caution.After running this, put your TWS earbuds back into manual pairing mode, open your Bluetooth menu, and connect to them again as a brand-new device. [1] (https://community.frame.work/t/solved-fedora-37-wireless-earbuds-will-not-pair/25942), [2] (https://www.reddit.com/r/Fedora/comments/opzlzy/bluetooth_devices_not_pairing/)4. Check for Dual-Connection Interference (Multi-pairing)Many modern TWS earbuds support dual-point connectivity or aggressively seek their last paired device (like your phone). If the earbuds connect to Fedora but then instantly detect your phone's Bluetooth, they may drop the Linux connection to favor the mobile device. [1] (https://bbs.archlinux.org/viewtopic.php?id=267233), [2] (https://www.facebook.com/groups/Fedora.linux/posts/10170243922555249/)Fix: Temporarily disable Bluetooth on your phone and any other nearby devices, then test the connection to your Fedora machine. [1] (https://www.facebook.com/groups/Fedora.linux/posts/10170243922555249/)If none of these resolve the issue, let me know:What desktop environment you are running (e.g., GNOME or KDE Plasma)The make/model of your TWS earbudsThe output of running journalctl -b 0 | grep -i bluetooth right after a disconnect happens [1] (https://discussion.fedoraproject.org/t/bluetooth-keeps-disconnecting-os-or-de-issue/76232), [2] (https://community.frame.work/t/fedora-43-gnome-crash-connecting-bluetooth-headphones-solved/79993), [3] (https://forums.linuxmint.com/viewtopic.php?t=411105), [4] (https://discussion.fedoraproject.org/t/bluetooth-is-extremely-bugged-out-in-f42-kde-also-in-f41-kde/158644), [5] (https://www.reddit.com/r/Fedora/comments/1lnjvvi/issue_summary_intermittent_bluetooth_audio/)
+
+```
+
+After running this, put your TWS earbuds back into manual pairing mode, open your Bluetooth menu, and connect to them again as a brand-new device.
+
+### 4. Check for Dual-Connection Interference (Multi-pairing)
+
+Many modern TWS earbuds support dual-point connectivity or aggressively seek their last paired device (like your phone). If the earbuds connect to Fedora but then instantly detect your phone's Bluetooth, they may drop the Linux connection to favor the mobile device.
+
+**The Fix:** Temporarily disable Bluetooth on your phone and any other nearby devices, then test the connection to your Fedora machine.
+
+---
+
+### Still experiencing issues?
+
+If none of these resolve the issue, please provide the following details to help troubleshoot further:
+
+* The desktop environment you are running (e.g., GNOME or KDE Plasma)
+* The make and model of your TWS earbuds
+* The terminal output of running `journalctl -b 0 | grep -i bluetooth` immediately after a disconnect happens
