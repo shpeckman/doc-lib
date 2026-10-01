@@ -1,39 +1,44 @@
-<!-- macros.md -->
-
 # Crystal Macros
 
-A complete reference for Crystal's compile-time macro system: the language (syntax, scoping, hooks, special variables) and the full macro method API exposed through the fictitious `Crystal::Macros` module.
+A practical guide to writing macros in Crystal, followed by a complete reference of the macro language: the top-level macro methods and every AST node type with the methods available on it at compile time.
 
-Targets Crystal 1.21.
+- [Part I — Writing Macros](#part-i--writing-macros)
+  - [What macros are](#what-macros-are)
+  - [Defining and invoking macros](#defining-and-invoking-macros)
+  - [Interpolating nodes: `{{ }}` vs `{% %}`](#interpolating-nodes----vs---)
+  - [Names and identifiers: `id`, `stringify`, `symbolize`](#names-and-identifiers-id-stringify-symbolize)
+  - [Conditionals and loops](#conditionals-and-loops)
+  - [Macro variables and fresh variables](#macro-variables-and-fresh-variables)
+  - [`verbatim`](#verbatim)
+  - [Macro hooks](#macro-hooks)
+  - [Annotations](#annotations)
+  - [The compile-time world](#the-compile-time-world)
+  - [Debugging macros](#debugging-macros)
+  - [Pitfalls and best practices](#pitfalls-and-best-practices)
+- [Part II — Macro Language Reference](#part-ii--macro-language-reference)
+  - [Top-level methods](#top-level-methods)
+  - [`ASTNode` (base of all nodes)](#astnode-base-of-all-nodes)
+  - [Literal nodes](#literal-nodes)
+  - [Expression nodes](#expression-nodes)
+  - [Definition nodes](#definition-nodes)
+  - [Type grammar nodes](#type-grammar-nodes)
+  - [Macro-internal nodes](#macro-internal-nodes)
+  - [`MacroId`](#macroid)
+  - [`TypeNode`](#typenode)
 
 ---
 
-## Table of Contents
+# Part I — Writing Macros
 
-1. [Overview](#overview)
-2. [Defining and Calling Macros](#defining-and-calling-macros)
-3. [Interpolation](#interpolation)
-4. [Directives](#directives)
-5. [Truthiness](#truthiness)
-6. [Special Macro Variables](#special-macro-variables)
-7. [Macro Defs](#macro-defs)
-8. [Hooks](#hooks)
-9. [Fresh Variables](#fresh-variables)
-10. [Constants and Type Resolution](#constants-and-type-resolution)
-11. [Annotations](#annotations)
-12. [Nested Macros and `verbatim`](#nested-macros-and-verbatim)
-13. [Comments and Documentation](#comments-and-documentation)
-14. [Top-Level Macro Methods](#top-level-macro-methods)
-15. [AST Node Reference](#ast-node-reference)
-16. [Pitfalls](#pitfalls)
+## What macros are
 
----
+A macro is a fragment of code that is expanded at **compile time**. When the compiler encounters a macro call, it runs the macro body as a small compile-time program whose output is Crystal source code; that generated code is then parsed and compiled in place of the call.
 
-## Overview
+Inside a macro, everything between `{{ ... }}` and `{% ... %}` operates on **AST nodes** — objects representing the syntax tree of your program — rather than on runtime values. Macro arguments are passed as AST nodes, types can be introspected through `@type`, and the fixed set of methods documented in Part II is available on those nodes.
 
-Macros are methods that receive AST nodes at compile time and produce code that is pasted into the program.
+Macros are expanded during the semantic phase, once per instantiation site that needs them, so generated code is fully type-checked like hand-written code.
 
-The generated output must be valid Crystal on its own before it is merged into the surrounding code.
+## Defining and invoking macros
 
 ```crystal
 macro define_method(name, content)
@@ -43,1043 +48,1238 @@ macro define_method(name, content)
 end
 
 define_method foo, 1
+define_method :bar, 2
+define_method "baz", 3
 
-foo # => 1
+puts foo # => 1
+puts bar # => 2
+puts baz # => 3
 ```
 
-Two syntactic forms drive everything:
+Notes:
 
-| Form        | Purpose                                                      |
-|-------------|--------------------------------------------------------------|
-| `{{ ... }}` | Evaluate an expression and paste its result into the output. |
-| `{% ... %}` | Evaluate an expression or control structure without pasting. |
+- Macro calls look like method calls, but there is no receiver and no runtime dispatch.
+- Arguments arrive as AST nodes: `foo` is a `Call`, `:bar` is a `SymbolLiteral`, `"baz"` is a `StringLiteral`.
+- A macro may declare a splat (`*args`), a double splat (`**opts`), and a block argument (`&block`), which receive `ArrayLiteral` / `TupleLiteral`, `NamedTupleLiteral`, and `Block` nodes respectively.
 
-Both forms work inside `macro` bodies and also directly in top-level code, class bodies, and method bodies.
+## Interpolating nodes: `{{ }}` vs `{% %}`
 
----
+Two delimiters exist inside a macro body:
 
-## Defining and Calling Macros
-
-### Scope and Visibility
-
-- **Top level:** a macro defined at the top level is visible everywhere.
-- **Private:** a `private` top-level macro is visible only in the file that defines it.
-- **Classes and modules:** macros defined inside a class or module are visible in that scope.
-- **Ancestors:** macro lookup also walks the ancestor chain (superclasses and included modules).
-- **Qualified calls:** a macro defined in a type can be invoked from outside it with a type prefix.
+- `{{ exp }}` — **macro expression**: evaluates `exp` in the macro language and pastes the result into the generated code.
+- `{% ... %}` — **macro control**: evaluated at compile time for its effect (conditionals, loops, assignments) and produces no output by itself.
 
 ```crystal
-class Foo
-  macro emphasize(value)
-    "***#{ {{value}} }***"
-  end
-
-  def yield_with_self(&)
-    with self yield
-  end
-end
-
-Foo.emphasize(10)                         # => "***10***"
-Foo.new.yield_with_self { emphasize(10) } # => "***10***"
-```
-
-### Parameters
-
-Macro parameters receive AST nodes, not values.
-
-| Parameter kind | Syntax            | Receives                                 |
-|----------------|-------------------|------------------------------------------|
-| Positional     | `macro m(a)`      | The node as written                      |
-| Default value  | `macro m(a = 1)`  | The default node when omitted            |
-| Splat          | `macro m(*args)`  | A `TupleLiteral` of nodes                |
-| Named-only     | `macro m(*, key)` | The node passed as `key: ...`            |
-| Double splat   | `macro m(**opts)` | A `NamedTupleLiteral` of named arguments |
-| Block          | `macro m(&block)` | A `Block` node                           |
-
-```crystal
-macro define_dummy_methods(*names)
-  {% for name, index in names %}
-    def {{name.id}}
-      {{index}}
-    end
+macro assert_size(type, expected)
+  {% actual = sizeof(type) %}
+  {% unless actual == expected %}
+    {% raise "#{type} has size #{actual}, expected #{expected}" %}
   {% end %}
 end
-
-define_dummy_methods foo, bar, baz
-
-foo # => 0
-baz # => 2
 ```
 
-### Blocks
+Outside of macros, `{{ ... }}` and `{% ... %}` can also appear directly in regular code (top-level, method bodies, type definitions) — they are expanded the same way.
 
-A block passed to a macro can be pasted with `{{yield}}`, or captured and inspected through `&block`.
+## Names and identifiers: `id`, `stringify`, `symbolize`
 
-```crystal
-macro timed(&block)
-  %start = Time.monotonic
-  {{block.body}}
-  puts Time.monotonic - %start
-end
+Different node types can be converted to a common currency:
 
-timed do
-  heavy_work
-end
-```
-
-`Block` exposes `body`, `args`, and `splat_index`.
-
----
-
-## Interpolation
-
-`{{ expr }}` pastes the resulting node as-is.
-
-A `SymbolLiteral` pastes as `:foo` and a `StringLiteral` pastes as `"foo"`. Use `.id` whenever you need a bare identifier.
+- `.id` → `MacroId`: the bare identifier. Use it to turn a string, symbol, var or call into something usable as a method name, variable name, etc.
+- `.stringify` → `StringLiteral`: the node's textual representation (including quotes for string literals).
+- `.symbolize` → `SymbolLiteral`: the node's textual representation as a symbol.
 
 ```crystal
-macro getter_for(name)
+macro getter(name)
   def {{name.id}}
     @{{name.id}}
   end
 end
 
-getter_for :value
-getter_for "value"
-getter_for value
+getter unicorns   # Call
+getter :unicorns  # SymbolLiteral
+getter "unicorns" # StringLiteral
 ```
 
-### Splatting
+All three calls generate the same method, because `.id` normalizes them. Without `.id`, the generated code would contain `def :unicorns` or `def "unicorns"` — invalid syntax.
 
-| Syntax                        | Output                                           |
-|-------------------------------|--------------------------------------------------|
-| `{{*tuple_or_array}}`         | Elements joined by commas                        |
-| `{{node.splat}}`              | Same, as a method call                           |
-| `{{node.splat(", ")}}`        | Joined, plus a trailing string only if non-empty |
-| `{{hash_or_nt.double_splat}}` | `k: v` pairs joined by commas                    |
+## Conditionals and loops
 
 ```crystal
-macro println(*values)
-  print {{*values}}, '\n'
-end
-
-println 1, 2, 3
-```
-
----
-
-## Directives
-
-### Assignment
-
-Macro variables live only within the current macro evaluation.
-
-```crystal
-{% names = %w(a b c) %}
-{% total = names.size * 2 %}
-```
-
-### Conditionals
-
-```crystal
-{% if flag?(:linux) %}
-  LIB = "libfoo.so"
-{% elsif flag?(:darwin) %}
-  LIB = "libfoo.dylib"
+{% if flag?(:win32) %}
+  # emitted only on Windows
+{% elsif some_node.is_a?(StringLiteral) %}
+  # ...
 {% else %}
-  LIB = "foo.dll"
-{% end %}
-
-{% unless flag?(:release) %}
-  DEBUG = true
+  # ...
 {% end %}
 ```
 
-A suffix form and a ternary are also valid inside an expression:
-
 ```crystal
-{% raise "need at least one" if names.empty? %}
-{{ names.size > 1 ? "many".id : "one".id }}
-```
-
-### Iteration
-
-`for` loops accept these iteration targets:
-
-| Target              | Loop variables                      |
-|---------------------|-------------------------------------|
-| `ArrayLiteral`      | `element` or `element, index`       |
-| `TupleLiteral`      | `element` or `element, index`       |
-| `RangeLiteral`      | `number`                            |
-| `HashLiteral`       | `key, value` or `key, value, index` |
-| `NamedTupleLiteral` | `key, value` or `key, value, index` |
-
-```crystal
-macro define_constants(count)
-  {% for i in (1..count) %}
-    PI_{{i.id}} = Math::PI * {{i}}
-  {% end %}
-end
-
-{% for key, value in {foo: 10, bar: 20} %}
-  def {{key.id}}
-    {{value}}
-  end
-{% end %}
-```
-
-### `begin`
-
-`{% begin %} ... {% end %}` wraps a region so that the macro emits it as one unit. It is required when a loop must produce fragments, such as `when` branches, that are only valid inside an enclosing construct.
-
-```crystal
-{% begin %}
-  case value
-  {% for klass in [Int32, String] %}
-    when {{klass}}
-      "is {{klass}}"
-  {% end %}
-  end
-{% end %}
-```
-
-### Blocks in Macro Code
-
-Collection methods accept blocks using the short `&.` form or the full `do |x| ... end` / `{ |x| ... }` form.
-
-```crystal
-{{ @type.instance_vars.map(&.name.stringify) }}
-{{ names.select { |n| n.starts_with?("a") } }}
-```
-
----
-
-## Truthiness
-
-| Falsey                         | Truthy          |
-|--------------------------------|-----------------|
-| `Nop`                          | Everything else |
-| `NilLiteral`                   |                 |
-| `BoolLiteral` with value false |                 |
-
-`&&`, `||`, and `!` work in macro expressions with the same semantics as at runtime.
-
----
-
-## Special Macro Variables
-
-| Variable     | Type                               | Meaning                                                               |
-|--------------|------------------------------------|-----------------------------------------------------------------------|
-| `@type`      | `TypeNode`                         | The current scope's *instance* type, even inside class methods.       |
-| `@top_level` | `TypeNode`                         | The top-level namespace.                                              |
-| `@def`       | `Def \| NilLiteral`                | The enclosing method, or nil when outside a method.                   |
-| `@caller`    | `ArrayLiteral(Call) \| NilLiteral` | The macro call stack, newest first; nil outside a macro and in hooks. |
-
-The `@caller` array currently only ever contains a single element.
-
-```crystal
-macro add_describe
-  def describe
-    "Class is: " + {{ @type.stringify }}
-  end
-end
-
-A_CONSTANT = 0
-
-{% if @top_level.has_constant?("A_CONSTANT") %}
-  puts "defined"
-{% end %}
-
-module Foo
-  def Foo.boo(arg1, arg2)
-    {% @def.receiver %}
-    {% @def.name %}
-    {% @def.args %}
-  end
-end
-
-macro where
-  {{ @caller.first.line_number }}
-end
-```
-
----
-
-## Macro Defs
-
-A regular `def` becomes a *macro def* when its body contains a macro expression that references `@type`. It is then instantiated separately for each concrete type that calls it.
-
-```crystal
-class Object
-  def instance_vars_names
-    {{ @type.instance_vars.map &.name.stringify }}
-  end
-end
-
-class Person
-  def initialize(@name : String, @age : Int32)
-  end
-end
-
-Person.new("John", 30).instance_vars_names # => ["name", "age"]
-```
-
-A macro def's parameters are ordinary runtime parameters. Their values cannot be inspected at compile time, so any comparison against them has to happen at runtime:
-
-```crystal
-class Object
-  def has_instance_var?(name) : Bool
-    {{ @type.instance_vars.map &.name.stringify }}.includes? name
-  end
-end
-```
-
-`TypeNode#instance_vars` and `TypeNode#has_inner_pointers?` are only reliable inside method bodies such as macro defs.
-
----
-
-## Hooks
-
-Hooks are specially named macros that the compiler invokes automatically.
-
-| Hook                   | Trigger                                                 | `@type`       | Multiple definitions |
-|------------------------|---------------------------------------------------------|---------------|----------------------|
-| `inherited`            | A subclass is defined                                   | The subclass  | Stack                |
-| `included`             | The module is included                                  | The includer  | Stack                |
-| `extended`             | The module is extended                                  | The extender  | Stack                |
-| `method_added(method)` | A method is defined in the current scope                | Current scope | Stack                |
-| `method_missing(call)` | A call does not resolve                                 | Current scope | Override             |
-| `finished`             | Parsing is complete, so all types and methods are known | Current scope | Stack                |
-
-When hooks **stack**, every definition runs, in the order it was defined. When a hook is **overridden**, only the last definition in a given context runs.
-
-`method_missing` and `method_added` apply only to the type they are defined in and its descendants. When defined outside any type, they apply only at the top level.
-
-```crystal
-class Parent
-  macro inherited
-    def lineage
-      "{{@type.name.id}} < Parent"
-    end
-  end
-end
-
-class Child < Parent
-end
-
-Child.new.lineage # => "Child < Parent"
-
-macro method_missing(call)
-  print "Got ", {{call.name.id.stringify}}, " with ", {{call.args.size}}, " arguments", '\n'
-end
-
-macro method_added(method)
-  {% puts "Method added: #{method.name}" %}
-end
-```
-
-`finished` runs only after every reopening of the type has been processed:
-
-```crystal
-class Foo
-  macro finished
-    {% puts @type.methods.map &.name %}
-  end
-end
-
-class Foo
-  def bar
-  end
-end
-```
-
-This prints `[bar]`, even though `bar` is defined after the hook.
-
----
-
-## Fresh Variables
-
-Generated code is parsed in the caller's scope, so a plain local variable in a macro can clobber the caller's variables.
-
-```crystal
-macro update_x
-  x = 1
-end
-
-x = 0
-update_x
-x # => 1
-```
-
-`%name` declares a variable whose generated name is guaranteed to be unique:
-
-```crystal
-macro dont_update_x
-  %x = 1
-  puts %x
-end
-
-x = 0
-dont_update_x
-x # => 0
-```
-
-`%name{k1, k2, ...}` declares a distinct fresh variable for each key tuple, which lets a loop create one variable per element:
-
-```crystal
-macro declare(*names)
-  {% for name, index in names %}
-    %var{index} = {{index}}
-  {% end %}
-  {% for name, index in names %}
-    puts %var{index}
-  {% end %}
-end
-```
-
----
-
-## Constants and Type Resolution
-
-Macros can read constants directly. A constant that names a type yields a `TypeNode`.
-
-```crystal
-VALUES = [1, 2, 3]
-
-{% for value in VALUES %}
-  puts {{value}}
-{% end %}
-```
-
-To turn a string into a type or constant, use `parse_type` followed by `resolve` or `resolve?`:
-
-```crystal
-MY_CONST = 1234
-
-struct Some::Namespace::Foo; end
-
-{{ parse_type("Some::Namespace::Foo").resolve.struct? }} # => true
-{{ parse_type("MY_CONST").resolve }}                     # => 1234
-```
-
-`Path`, `Generic`, `Union`, `Metaclass`, and `ProcNotation` all provide `resolve`, which raises a compile-time error on failure, and `resolve?`, which returns `NilLiteral` instead. `TypeNode#resolve` returns `self`, so calling `resolve` is always safe on any of these nodes.
-
----
-
-## Annotations
-
-Annotations attach compile-time metadata that macros can read back.
-
-```crystal
-annotation Column
-end
-
-class User
-  @[Column(name: "user_name", 1)]
-  @name : String = ""
-
-  def columns
-    {% begin %}
-      {
-        {% for ivar in @type.instance_vars %}
-          {% if ann = ivar.annotation(Column) %}
-            {{ivar.name.stringify}} => {{ann[:name]}},
-          {% end %}
-        {% end %}
-      }
-    {% end %}
-  end
-end
-```
-
-Annotations can be read from several node types:
-
-| Node       | Methods                                          |
-|------------|--------------------------------------------------|
-| `TypeNode` | `annotation(T)`, `annotations(T)`, `annotations` |
-| `MetaVar`  | `annotation(T)`, `annotations(T)`, `annotations` |
-| `Def`      | `annotation(T)`, `annotations(T)`, `annotations` |
-| `Arg`      | `annotation(T)`, `annotations(T)`, `annotations` |
-
-`annotation(T)` returns the last matching annotation, or `NilLiteral` if there is none.
-
-An `Annotation` node exposes these methods:
-
-| Method       | Returns             | Description                                        |
-|--------------|---------------------|----------------------------------------------------|
-| `name`       | `Path`              | Annotation type name                               |
-| `[](index)`  | `ASTNode`           | Positional argument, `NilLiteral` if out of bounds |
-| `[](name)`   | `ASTNode`           | Named argument, `NilLiteral` if absent             |
-| `args`       | `TupleLiteral`      | All positional arguments                           |
-| `named_args` | `NamedTupleLiteral` | All named arguments                                |
-
----
-
-## Nested Macros and `verbatim`
-
-A macro can generate other macros. Escape the inner macro's expressions with a backslash (`\{{ }}`, `\{% %}`) so the outer macro does not evaluate them.
-
-```crystal
-macro define_greeters(*names)
-  {% for name in names %}
-    macro greet_{{name.id}}(greeting)
-      "\{{greeting.id}} {{name.id}}"
-    end
-  {% end %}
-end
-
-define_greeters alice, bob
-
-greet_alice "hello" # => "hello alice"
-```
-
-`{% verbatim do %} ... {% end %}` passes its contents through without evaluation, so no escaping is needed. The trade-off is that the outer macro's variables are not visible inside the block. To use one, hand it over through an escaped assignment:
-
-```crystal
-macro define_greeters(*names)
-  {% for name in names %}
-    macro greet_{{name.id}}(greeting)
-      \{% name = {{name.stringify}} %}
-      {% verbatim do %}
-        "{{greeting.id}} {{name.id}}"
-      {% end %}
-    end
-  {% end %}
-end
-```
-
----
-
-## Comments and Documentation
-
-Macro expressions are evaluated inside comments too.
-
-This makes generated documentation possible:
-
-```crystal
-{% for name, index in ["foo", "bar"] %}
-  # Returns {{index}}.
+{% for name, index in %w[foo bar baz] %}
   def {{name.id}}
     {{index}}
   end
 {% end %}
 ```
 
-The same rule has a side effect: a macro directive cannot be disabled by commenting it out.
+`{% for %}` iterates over `ArrayLiteral`, `TupleLiteral`, `HashLiteral`, `NamedTupleLiteral` (yielding key/value pairs) and `RangeLiteral` of integer literals. `{% begin %}...{% end %}` groups generated code. Loop-local variables are implicitly fresh per iteration.
+
+## Macro variables and fresh variables
+
+Variables assigned inside `{% ... %}` live only in the macro's compile-time scope:
 
 ```crystal
-macro a
-  # {% if false %}
-  puts 42
-  # {% end %}
-end
+{% count = 3 %}
+{% names = ["a", "b", "c"] %}
 ```
 
-Calling `a` prints nothing, because the commented-out `if false` is still evaluated.
-
-To merge the documentation written on a macro call into the generated code, combine `@caller` with `doc_comment`:
+To declare a variable in the **generated** code without colliding with variables at the expansion site, use a *fresh variable*: prefix the name with `%`.
 
 ```crystal
-macro gen_method(name)
-  # {{ @caller.first.doc_comment }}
-  #
-  # Comment added via macro expansion.
-  def {{name.id}}
+macro repeat(times, &block)
+  %i = 0
+  while %i < {{times}}
+    {{block.body}}
+    %i += 1
   end
 end
 
-# Comment on macro call.
-gen_method foo
+repeat(3) { puts %i }
 ```
 
-`doc` and `doc_comment` return empty results outside the `crystal docs` command.
+Each expansion of the macro renames `%i` to a unique identifier (like `__temp_5`), so nested or repeated expansions never clash. `MacroVar#expressions` lets you index fresh variables (`%i{0}`, `%i{1}`, …) when you need a stable family of them.
 
----
+## `verbatim`
 
-## Top-Level Macro Methods
-
-These methods can be called anywhere inside `{{ }}` or `{% %}`.
-
-### Environment and Build
-
-| Method                     | Returns                       | Description                                                             |
-|----------------------------|-------------------------------|-------------------------------------------------------------------------|
-| `flag?(name)`              | `BoolLiteral`                 | Whether a compile-time flag is set for the target.                      |
-| `host_flag?(name)`         | `BoolLiteral`                 | Whether a flag is set for the host, which matters when cross-compiling. |
-| `env(name)`                | `StringLiteral \| NilLiteral` | Environment variable value at compile time.                             |
-| `compare_versions(v1, v2)` | `NumberLiteral`               | Semver comparison, returning `-1`, `0`, or `1`.                         |
-| `skip_file`                | `Nop`                         | Skips the rest of the current file.                                     |
+`{% verbatim do %} ... {% end %}` suppresses macro expansion of the nested `{{ }}` / `{% %}` inside it. This is essential when a macro must *generate another macro*:
 
 ```crystal
-{% skip_file unless flag?(:linux) %}
-{% if compare_versions(Crystal::VERSION, "1.10.0") >= 0 %}
+macro define_dsl(name)
+  macro {{name.id}}
+    {% verbatim do %}
+      def generated_{{@type.name.underscore.id}}
+      end
+    {% end %}
+  end
+end
+```
+
+Without `verbatim`, the inner `{{@type...}}` would be evaluated by the outer macro instead of being emitted literally.
+
+## Macro hooks
+
+Special macro definitions act as callbacks fired by the compiler:
+
+| Hook                         | Fires when                                                                                                                                            |
+|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `macro finished`             | The main type hierarchy is known; the last expansion phase before codegen. Ideal for generating code that needs `all_subclasses`, `all_methods`, etc. |
+| `macro inherited`            | A type is subclassed.                                                                                                                                 |
+| `macro included`             | A module is included into a type.                                                                                                                     |
+| `macro extended`             | A module is used with `extend`.                                                                                                                       |
+| `macro method_missing(call)` | An unknown method is called on the type (receives the `Call` node).                                                                                   |
+| `macro method_added(def)`    | A method is defined in the type (receives the `Def` node).                                                                                            |
+
+Example — a registry of subclasses:
+
+```crystal
+abstract class Animal
+  macro inherited
+    {% unless @type.abstract? %}
+      Animal.register({{@type}})
+    {% end %}
+  end
+
+  def self.register(type)
+    (@@subclasses ||= [] of String) << type.name
+  end
+end
+```
+
+`finished` runs after all other hooks, so it sees the complete program; hooks like `inherited` run while the hierarchy is still being built, and some `TypeNode` methods (e.g. `all_subclasses`) are only reliable inside `finished`.
+
+## Annotations
+
+Macros can read annotations attached to types, methods, defs and instance variables:
+
+```crystal
+annotation Field
+end
+
+class Config
+  @[Field(name: "port")]
+  @port : Int32 = 8080
+end
+```
+
+```crystal
+{% for ivar in @type.instance_vars %}
+  {% ann = ivar.annotation(Field) %}
+  {% if ann %}
+    # ann[:name] -> "port"; ann.args / ann.named_args also available
+  {% end %}
 {% end %}
 ```
 
-### Files and Processes
+`annotation(T)` returns the last annotation of that type or `NilLiteral`; `annotations(T)` returns all of them; `annotations` returns every annotation regardless of type.
 
-| Method                 | Returns                       | Description                                                      |
-|------------------------|-------------------------------|------------------------------------------------------------------|
-| `read_file(path)`      | `StringLiteral`               | Reads a file; any failure is a compile-time error.               |
-| `read_file?(path)`     | `StringLiteral \| NilLiteral` | Reads a file, returning nil on I/O failure.                      |
-| `file_exists?(path)`   | `BoolLiteral`                 | Whether the file exists.                                         |
-| `` `command` ``        | `MacroId`                     | Runs a shell command and returns its stdout; errors if it fails. |
-| `system(command)`      | `MacroId`                     | Same as the backtick form.                                       |
-| `run(filename, *args)` | `MacroId`                     | Compiles and runs a Crystal program, returning its stdout.       |
+## The compile-time world
 
-Relative paths passed to `read_file` resolve against the current working directory. Use `"#{__DIR__}/file"` to make them relative to the source file instead.
+A handful of top-level macro methods connect expansion to the build environment:
 
-The compiler may cache the executable built by `run`. That makes `run` programs that change between compilations, or that are slow, a poor fit.
+- `{{ flag?(:x86_64) }}` / `host_flag?` — test compile-time flags (target vs host, which differ under cross-compilation).
+- `{{ env("HOME") }}` — read an environment variable at compile time.
+- `read_file(path)` / `read_file?(path)` / `file_exists?(path)` — embed external files (use `"#{__DIR__}/..."` for paths relative to the current source file).
+- `{{ run("./gen", arg) }}` — compile and run a Crystal helper program at compile time and embed its output. Powerful (arbitrary file/network access) but slow and cached by mtime; keep run programs deterministic and fast.
+- `{{ system("git rev-parse HEAD") }}` or backtick literals — run a shell command.
+- `{% skip_file unless flag?(:darwin) %}` — skip the rest of the current file.
+- `{{ compare_versions(Crystal::VERSION, "1.0.0") }}` — semver comparison for version-dependent code.
 
-```crystal
-DATA = {{ read_file("#{__DIR__}/data.txt") }}
-GIT_SHA = {{ `git rev-parse HEAD`.stringify.chomp }}
-```
+## Debugging macros
 
-### Types and Layout
+- `{% puts node %}`, `{% p node %}`, `{% pp node %}` — print AST nodes at compile time.
+- `{% p! expr %}` / `{% pp! expr %}` — print the expression **and** its value.
+- `{% debug %}` — dump the macro's whole generated buffer (formatted by default; `{% debug(format: false) %}` for raw output).
+- `{% raise "message" %}` — abort compilation with an error; `node.raise` highlights that node. `warning` emits a non-fatal warning.
+- `crystal tool expand -c file.cr:line:col file.cr` — show the expansion of a macro at a cursor location.
 
-| Method               | Returns                                        | Description                                      |
-|----------------------|------------------------------------------------|--------------------------------------------------|
-| `parse_type(string)` | `Path \| Generic \| ProcNotation \| Metaclass` | Parses a type expression; resolve it afterwards. |
-| `sizeof(Type)`       | `NumberLiteral`                                | Size in bytes of a *stable* type.                |
-| `alignof(Type)`      | `NumberLiteral`                                | Alignment in bytes of a *stable* type.           |
+## Pitfalls and best practices
 
-`sizeof` and `alignof` take a constant that names the type. They do not accept a `typeof` expression or any value that is only known during macro evaluation.
-
-All Crystal types are stable except the following:
-
-- structs
-- `ReferenceStorage` instances
-- modules (their metaclasses are stable)
-- uninstantiated generics
-- `StaticArray`, `Tuple`, and `NamedTuple` instances with unstable elements
-- unions containing unstable types
-
-### Diagnostics and Debugging
-
-| Method                     | Returns      | Description                                                     |
-|----------------------------|--------------|-----------------------------------------------------------------|
-| `raise(message)`           | `NoReturn`   | Compile-time error.                                             |
-| `warning(message)`         | `NilLiteral` | Compile-time warning.                                           |
-| `puts(*exps)` / `p` / `pp` | `Nop`        | Prints nodes at compile time.                                   |
-| `print(*exps)`             | `Nop`        | Prints nodes without a trailing newline.                        |
-| `p!(*exps)` / `pp!`        | `Nop`        | Prints each expression followed by its value.                   |
-| `debug(format = true)`     | `Nop`        | Prints the current macro's output buffer, formatted by default. |
-
-`ASTNode#raise` and `ASTNode#warning` behave the same, but also point the diagnostic at that node's source location.
+- **Macro arguments are syntax, not values.** `foo(1 + 2)` receives a `Call` node for `1 + 2`, not `3`. Use `.id`, `stringify`, or introspect the node; evaluate arithmetic only in `{% %}` with literal operands.
+- **`is_a?` checks AST node types, never program types.** `{{ 1.is_a?(NumberLiteral) }}` is `true`; `{{ 1.is_a?(Int32) }}` is `false`.
+- **Resolve paths deliberately.** `Path#resolve` raises a compile-time error on unknown constants; `resolve?` returns `NilLiteral` instead. `parse_type("Foo(Int32)")` builds a resolvable type grammar node from a string.
+- **`run` caching.** The compiler caches the executable produced for `run` and recompiles only when its dependencies' mtimes change. A run program that itself depends on the time of day or on shell commands at compile time defeats this caching and slows every build.
+- **Top-level vs method context.** `TypeNode#instance_vars` and `#has_inner_pointers?` must be called from within a method (or a hook that expands into one); at top level they return empty/incorrect results.
+- **Keep expansions small.** Generated code is type-checked at every instantiation site; prefer generating a thin wrapper over shared runtime code instead of duplicating large bodies.
 
 ---
 
-## AST Node Reference
-
-All return types are macro AST node types. "Similar to `X`" means the method mirrors the runtime method of the same name.
-
-### ASTNode
-
-These methods are available on every node.
-
-| Method                    | Returns                       | Description                                                |
-|---------------------------|-------------------------------|------------------------------------------------------------|
-| `id`                      | `MacroId`                     | Node as an identifier.                                     |
-| `stringify`               | `StringLiteral`               | Source text as a string literal.                           |
-| `symbolize`               | `SymbolLiteral`               | Source text as a symbol literal.                           |
-| `class_name`              | `StringLiteral`               | AST class name, e.g. `"StringLiteral"`.                    |
-| `filename`                | `StringLiteral \| NilLiteral` | Source file.                                               |
-| `line_number`             | `NumberLiteral \| NilLiteral` | Start line, 1-based.                                       |
-| `column_number`           | `NumberLiteral \| NilLiteral` | Start column, 1-based.                                     |
-| `end_line_number`         | `NumberLiteral \| NilLiteral` | End line.                                                  |
-| `end_column_number`       | `NumberLiteral \| NilLiteral` | End column.                                                |
-| `==(other)` / `!=(other)` | `BoolLiteral`                 | Textual equality.                                          |
-| `is_a?(NodeType)`         | `BoolLiteral`                 | AST node type check; the argument is never a program type. |
-| `nil?`                    | `BoolLiteral`                 | True for `NilLiteral` and `Nop`.                           |
-| `raise(message)`          | `NoReturn`                    | Error pointing at this node.                               |
-| `warning(message)`        | `NilLiteral`                  | Warning pointing at this node.                             |
-| `doc`                     | `StringLiteral`               | Attached doc comment; only populated under `crystal docs`. |
-| `doc_comment`             | `MacroId`                     | Doc comment with each line prefixed by `#`.                |
-
-The stub file declares the location methods as returning `StringLiteral | NilLiteral`. The official reference's `@caller.first.line_number` example evaluates to a bare number (`# => 9`), so the table lists `NumberLiteral`.
-
-### Literals
-
-#### Nop, NilLiteral, BoolLiteral
-
-These have no methods beyond `ASTNode`. `Nop` is an empty node whose text is the empty string, for example the missing `else` branch of an `if`.
-
-#### NumberLiteral
-
-| Method                                | Returns         | Description                                |
-|---------------------------------------|-----------------|--------------------------------------------|
-| `+ - * // % & \| ^ ** << >>` (binary) | `NumberLiteral` | Arithmetic and bitwise operators.          |
-| `+ - ~` (unary)                       | `NumberLiteral` | Unary operators.                           |
-| `< <= > >=`                           | `BoolLiteral`   | Comparison.                                |
-| `<=>`                                 | `NumberLiteral` | Three-way comparison.                      |
-| `zero?`                               | `BoolLiteral`   | Whether the value is 0.                    |
-| `kind`                                | `SymbolLiteral` | Literal type, e.g. `:i32`, `:u16`, `:f64`. |
-| `to_number`                           | `MacroId`       | Value without its type suffix.             |
-
-`/` is not available in macros; use `//` for division.
-
-#### CharLiteral
-
-| Method | Returns         | Description                     |
-|--------|-----------------|---------------------------------|
-| `id`   | `MacroId`       | The character as an identifier. |
-| `ord`  | `NumberLiteral` | Codepoint.                      |
-
-#### StringLiteral, SymbolLiteral, MacroId
-
-All three share these string methods. `Self` below means the receiver's own class.
-
-| Method                              | Returns                       | Description                                                          |
-|-------------------------------------|-------------------------------|----------------------------------------------------------------------|
-| `id`                                | `MacroId`                     | Contents as an identifier.                                           |
-| `[](range)`                         | `Self`                        | Substring.                                                           |
-| `=~(regex)`                         | `BoolLiteral`                 | Regex match test.                                                    |
-| `+(str_or_char)`                    | `Self`                        | Concatenation.                                                       |
-| `camelcase(*, lower = false)`       | `Self`                        | Similar to `String#camelcase`.                                       |
-| `capitalize`                        | `Self`                        | Similar to `String#capitalize`.                                      |
-| `chars`                             | `ArrayLiteral(CharLiteral)`   | Characters.                                                          |
-| `chomp`                             | `Self`                        | Removes a trailing newline.                                          |
-| `count(char)`                       | `NumberLiteral`               | Occurrences of a character.                                          |
-| `downcase` / `upcase`               | `Self`                        | Case conversion.                                                     |
-| `empty?`                            | `BoolLiteral`                 | Empty check.                                                         |
-| `starts_with?(s)` / `ends_with?(s)` | `BoolLiteral`                 | Prefix and suffix tests; accept a string or char.                    |
-| `includes?(s)`                      | `BoolLiteral`                 | Substring or char test.                                              |
-| `gsub(regex, replacement)`          | `Self`                        | Regex replace.                                                       |
-| `gsub(regex) { \|match, groups\| }` | `Self`                        | Block replace; `$~` and `$1` are not supported.                      |
-| `match(regex)`                      | `HashLiteral \| NilLiteral`   | Capture hash in the same shape as `MatchData#to_h`.                  |
-| `scan(regex)`                       | `ArrayLiteral(HashLiteral)`   | One capture hash per match.                                          |
-| `size`                              | `NumberLiteral`               | Length.                                                              |
-| `lines`                             | `ArrayLiteral(StringLiteral)` | Split on newlines.                                                   |
-| `split`                             | `ArrayLiteral(StringLiteral)` | Split on whitespace.                                                 |
-| `split(string \| char \| regex)`    | `ArrayLiteral(StringLiteral)` | Split on a separator.                                                |
-| `strip`                             | `Self`                        | Trim whitespace.                                                     |
-| `titleize`                          | `Self`                        | Similar to `String#titleize`.                                        |
-| `underscore`                        | `Self`                        | Similar to `String#underscore`.                                      |
-| `tr(from, to)`                      | `Self`                        | Character translation.                                               |
-| `to_i(base = 10)`                   | `NumberLiteral`               | Integer parse.                                                       |
-| `to_utf16`                          | `ASTNode`                     | Experimental: a `Slice(UInt16)` literal expression, null-terminated. |
-
-`split(ASTNode)` is deprecated in favour of `split(StringLiteral)`.
-
-`StringLiteral` and `MacroId` additionally support `<` and `>` for lexical comparison. `StringLiteral` also supports `*(n)` for repetition.
-
-#### StringInterpolation
-
-| Method        | Returns                 | Description                                                                                       |
-|---------------|-------------------------|---------------------------------------------------------------------------------------------------|
-| `expressions` | `ArrayLiteral(ASTNode)` | The parts in order: string literals for plain text, arbitrary nodes for interpolated expressions. |
-
-#### ArrayLiteral and TupleLiteral
-
-Both share this API. Methods that return a collection return an `ArrayLiteral` on arrays and a `TupleLiteral` on tuples.
-
-| Method                             | Returns                         | Description                                         |
-|------------------------------------|---------------------------------|-----------------------------------------------------|
-| `any? { }` / `all? { }`            | `BoolLiteral`                   | Predicate tests.                                    |
-| `find { }`                         | `ASTNode \| NilLiteral`         | First element matching the block.                   |
-| `map { }` / `map_with_index { }`   | collection                      | Transform each element.                             |
-| `select { }` / `reject { }`        | collection                      | Filter elements.                                    |
-| `reduce { }` / `reduce(memo) { }`  | `ASTNode`                       | Fold.                                               |
-| `each { }` / `each_with_index { }` | `NilLiteral`                    | Iterate.                                            |
-| `sort` / `sort_by { }`             | collection                      | Sort.                                               |
-| `uniq` / `shuffle`                 | collection                      | Deduplicate or shuffle.                             |
-| `first` / `last`                   | `ASTNode \| NilLiteral`         | Nil when empty.                                     |
-| `size` / `empty?`                  | `NumberLiteral` / `BoolLiteral` | Size queries.                                       |
-| `includes?(node)`                  | `BoolLiteral`                   | Membership test.                                    |
-| `join(sep)`                        | `StringLiteral`                 | Join elements into a string.                        |
-| `splat(trailing = nil)`            | `MacroId`                       | Comma-joined; appends `trailing` only if non-empty. |
-| `[](index)`                        | `ASTNode`                       | Element access, `NilLiteral` if out of bounds.      |
-| `[](range)` / `[](start, count)`   | collection \| `NilLiteral`      | Slice.                                              |
-| `[]=(index, value)`                | `ASTNode`                       | In-place assignment.                                |
-| `push` / `<<` / `unshift`          | collection                      | Mutating append and prepend.                        |
-| `+(other)` / `-(other)` / `*(n)`   | collection                      | Concatenate, difference, repeat.                    |
-
-`ArrayLiteral` has three additional methods:
-
-| Method  | Returns          | Description                           |
-|---------|------------------|---------------------------------------|
-| `clear` | `ArrayLiteral`   | Empties the array.                    |
-| `of`    | `ASTNode \| Nop` | The `String` in `[] of String`.       |
-| `type`  | `Path \| Nop`    | The receiver type in `MyArray{1, 2}`. |
-
-#### HashLiteral
-
-| Method                            | Returns                       | Description                                 |
-|-----------------------------------|-------------------------------|---------------------------------------------|
-| `[](key)`                         | `ASTNode`                     | Value for the key, `NilLiteral` if missing. |
-| `[]=(key, value)`                 | `ASTNode`                     | Assignment.                                 |
-| `has_key?(key)`                   | `BoolLiteral`                 | Key test.                                   |
-| `keys` / `values`                 | `ArrayLiteral`                | Keys or values.                             |
-| `to_a`                            | `ArrayLiteral(TupleLiteral)`  | Key-value pairs.                            |
-| `size` / `empty?` / `clear`       | various                       | Size queries and clearing.                  |
-| `each { }` / `map { }`            | `NilLiteral` / `ArrayLiteral` | Iteration.                                  |
-| `select { }` / `reject { }`       | `HashLiteral`                 | Filter by block.                            |
-| `select(*keys)` / `reject(*keys)` | `HashLiteral`                 | Keep or drop the given keys.                |
-| `double_splat(trailing = nil)`    | `MacroId`                     | `k => v` pairs joined by commas.            |
-| `of_key` / `of_value`             | `ASTNode \| Nop`              | The types in `{} of K => V`.                |
-| `type`                            | `Path \| Nop`                 | The receiver type in `MyHash{...}`.         |
-
-#### NamedTupleLiteral
-
-`NamedTupleLiteral` has the same API as `HashLiteral` except that it has no `clear`, `of_key`, `of_value`, or `type`. It adds `each_with_index { }`.
-
-Keys may be given as a `SymbolLiteral`, `StringLiteral`, or `MacroId`. `select` and `reject` return a `NamedTupleLiteral`.
-
-#### RangeLiteral
-
-| Method          | Returns        | Description                               |
-|-----------------|----------------|-------------------------------------------|
-| `begin` / `end` | `ASTNode`      | Bounds.                                   |
-| `excludes_end?` | `ASTNode`      | Whether the range was written with `...`. |
-| `each { }`      | `NilLiteral`   | Iterate; integer ranges only.             |
-| `map { }`       | `ArrayLiteral` | Transform; integer ranges only.           |
-| `to_a`          | `ArrayLiteral` | Expand; integer ranges only.              |
-
-#### RegexLiteral
-
-| Method    | Returns                                | Description                 |
-|-----------|----------------------------------------|-----------------------------|
-| `source`  | `StringLiteral \| StringInterpolation` | Pattern source.             |
-| `options` | `ArrayLiteral(SymbolLiteral)`          | Flags, e.g. `[:i, :m, :x]`. |
-
-### Variables
-
-| Node              | Method                                           | Returns                         | Description                                         |
-|-------------------|--------------------------------------------------|---------------------------------|-----------------------------------------------------|
-| `Var`             | `id`                                             | `MacroId`                       | Variable name.                                      |
-| `InstanceVar`     | `name`                                           | `MacroId`                       | Name without the `@`.                               |
-| `ReadInstanceVar` | `obj`, `name`                                    | `ASTNode`, `MacroId`            | Parts of `obj.@var`.                                |
-| `ClassVar`        | `name`                                           | `MacroId`                       | Class variable name.                                |
-| `Global`          | `name`                                           | `MacroId`                       | Global variable name.                               |
-| `MetaVar`         | `name`                                           | `MacroId`                       | Typed variable, as returned by `instance_vars`.     |
-|                   | `type`                                           | `TypeNode \| NilLiteral`        | Declared or inferred type.                          |
-|                   | `default_value`                                  | `ASTNode`                       | Default value, or `NilLiteral` when there is none.  |
-|                   | `has_default_value?`                             | `BoolLiteral`                   | Distinguishes "no default" from a default of `nil`. |
-|                   | `annotation(T)`, `annotations(T)`, `annotations` | see [Annotations](#annotations) |                                                     |
-
-### Calls and Arguments
-
-**Call**
-
-| Method       | Returns                       | Description                        |
-|--------------|-------------------------------|------------------------------------|
-| `name`, `id` | `MacroId`                     | Method name.                       |
-| `receiver`   | `ASTNode \| Nop`              | Explicit receiver, if any.         |
-| `global?`    | `BoolLiteral`                 | Whether the call starts with `::`. |
-| `args`       | `ArrayLiteral`                | Positional arguments.              |
-| `named_args` | `ArrayLiteral(NamedArgument)` | Named arguments.                   |
-| `block`      | `Block \| Nop`                | Block passed to the call.          |
-| `block_arg`  | `ASTNode \| Nop`              | The `&block` argument.             |
-
-**NamedArgument**
-
-| Method  | Returns   | Description     |
-|---------|-----------|-----------------|
-| `name`  | `MacroId` | Argument name.  |
-| `value` | `ASTNode` | Argument value. |
-
-**Block**
-
-| Method        | Returns                       | Description                   |
-|---------------|-------------------------------|-------------------------------|
-| `body`        | `ASTNode`                     | Block body.                   |
-| `args`        | `ArrayLiteral(MacroId)`       | Block parameter names.        |
-| `splat_index` | `NumberLiteral \| NilLiteral` | Index of the splat parameter. |
-
-**Arg**
-
-| Method                                           | Returns                         | Description                                 |
-|--------------------------------------------------|---------------------------------|---------------------------------------------|
-| `name`                                           | `MacroId`                       | External name (`to` in `write(to file)`).   |
-| `internal_name`                                  | `MacroId`                       | Internal name (`file` in `write(to file)`). |
-| `default_value`                                  | `ASTNode \| Nop`                | Default value, if any.                      |
-| `restriction`                                    | `ASTNode \| Nop`                | Type restriction, if any.                   |
-| `annotation(T)`, `annotations(T)`, `annotations` | see [Annotations](#annotations) |                                             |
-
-### Control Flow and Expressions
-
-| Node                                                                                                        | Methods                                                                                     |
-|-------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------|
-| `Expressions`                                                                                               | `expressions : ArrayLiteral(ASTNode)`                                                       |
-| `If`                                                                                                        | `cond`, `then`, `else`                                                                      |
-| `Case`                                                                                                      | `cond`, `whens : ArrayLiteral(When)`, `else`, `exhaustive?` (true for `case ... in`)        |
-| `When`                                                                                                      | `conds : ArrayLiteral`, `body`, `exhaustive?` (true for `in`)                               |
-| `Select`                                                                                                    | `whens : ArrayLiteral(When)`, `else`                                                        |
-| `While`                                                                                                     | `cond`, `body`                                                                              |
-| `Assign`                                                                                                    | `target`, `value`                                                                           |
-| `MultiAssign`                                                                                               | `targets`, `values`                                                                         |
-| `And`, `Or`                                                                                                 | `left`, `right`                                                                             |
-| `Not`, `PointerOf`, `SizeOf`, `InstanceSizeOf`, `AlignOf`, `InstanceAlignOf`, `Out`, `Splat`, `DoubleSplat` | `exp`                                                                                       |
-| `OffsetOf`                                                                                                  | `type`, `offset`                                                                            |
-| `Return`, `Break`, `Next`                                                                                   | `exp : ASTNode \| Nop`; multiple values are wrapped in a `TupleLiteral`                     |
-| `Yield`                                                                                                     | `expressions : ArrayLiteral`, `scope : ASTNode \| Nop` (the object after `with`)            |
-| `ExceptionHandler`                                                                                          | `body`, `rescues : ArrayLiteral(Rescue) \| NilLiteral`, `else`, `ensure`                    |
-| `Rescue`                                                                                                    | `body`, `types : ArrayLiteral \| NilLiteral`, `name : MacroId \| Nop`                       |
-| `Cast`, `NilableCast`                                                                                       | `obj`, `to`                                                                                 |
-| `IsA`                                                                                                       | `receiver`, `arg`                                                                           |
-| `RespondsTo`                                                                                                | `receiver`, `name : StringLiteral`                                                          |
-| `TypeOf`                                                                                                    | `args : ArrayLiteral(ASTNode)`                                                              |
-| `VisibilityModifier`                                                                                        | `visibility : SymbolLiteral`, `exp`                                                         |
-| `Require`                                                                                                   | `path : StringLiteral`                                                                      |
-| `ProcLiteral`                                                                                               | `args : ArrayLiteral(Arg)`, `body`, `return_type : ASTNode \| Nop`                          |
-| `ProcPointer`                                                                                               | `args`, `obj : ASTNode \| NilLiteral`, `name : MacroId`, `global?`                          |
-| `TypeDeclaration`                                                                                           | `var : MacroId`, `type`, `value : ASTNode \| Nop`                                           |
-| `UninitializedVar`                                                                                          | `var : MacroId`, `type`                                                                     |
-| `Asm`                                                                                                       | `text`, `outputs`, `inputs`, `clobbers`, `volatile?`, `alignstack?`, `intel?`, `can_throw?` |
-| `AsmOperand`                                                                                                | `constraint : StringLiteral`, `exp`                                                         |
-| `Self`, `Underscore`, `ImplicitObj`, `MagicConstant`                                                        | No methods beyond `ASTNode`                                                                 |
-
-### Definitions
-
-**Def**
-
-| Method                                           | Returns                         | Description                                    |
-|--------------------------------------------------|---------------------------------|------------------------------------------------|
-| `name`                                           | `MacroId`                       | Method name.                                   |
-| `args`                                           | `ArrayLiteral(Arg)`             | Parameters.                                    |
-| `splat_index`                                    | `NumberLiteral \| NilLiteral`   | Index of the splat parameter.                  |
-| `double_splat`                                   | `Arg \| Nop`                    | The `**` parameter.                            |
-| `block_arg`                                      | `Arg \| Nop`                    | The `&` parameter.                             |
-| `accepts_block?`                                 | `BoolLiteral`                   | Whether the method can be called with a block. |
-| `return_type`                                    | `ASTNode \| Nop`                | Declared return type.                          |
-| `free_vars`                                      | `ArrayLiteral(MacroId)`         | The `forall` variables.                        |
-| `body`                                           | `ASTNode`                       | Method body.                                   |
-| `receiver`                                       | `ASTNode \| Nop`                | The `self` in `def self.foo`.                  |
-| `abstract?`                                      | `BoolLiteral`                   | Whether the method is abstract.                |
-| `visibility`                                     | `SymbolLiteral`                 | `:public`, `:protected`, or `:private`.        |
-| `annotation(T)`, `annotations(T)`, `annotations` | see [Annotations](#annotations) |                                                |
-
-A `Primitive` node represents the body of an `@[Primitive]` def; its `name` returns a `SymbolLiteral`.
-
-**Macro**
-
-`Macro` nodes have `name`, `args`, `splat_index`, `double_splat`, `block_arg`, `body`, and `visibility`, with the same meanings as on `Def`.
-
-**Type definitions**
-
-| Node                | Methods                                                                                                                                |
-|---------------------|----------------------------------------------------------------------------------------------------------------------------------------|
-| `ClassDef`          | `abstract?`, `kind` (`class` or `struct`), `name(*, generic_args = true)`, `superclass`, `body`, `type_vars`, `splat_index`, `struct?` |
-| `ModuleDef`         | `kind`, `name(*, generic_args = true)`, `body`, `type_vars`, `splat_index`                                                             |
-| `EnumDef`           | `kind`, `name`, `base_type`, `body`                                                                                                    |
-| `AnnotationDef`     | `kind`, `name`, `body` (always `Nop`)                                                                                                  |
-| `LibDef`            | `kind`, `name`, `body`                                                                                                                 |
-| `CStructOrUnionDef` | `union?`, `kind`, `name`, `body`                                                                                                       |
-| `FunDef`            | `name`, `real_name`, `args`, `variadic?`, `return_type`, `body`, `has_body?` (true for top-level funs)                                 |
-| `TypeDef`           | `name : Path`, `type`                                                                                                                  |
-| `ExternalVar`       | `name`, `real_name`, `type`                                                                                                            |
-| `Alias`             | `name : Path`, `type`                                                                                                                  |
-| `Include`, `Extend` | `name`                                                                                                                                 |
-
-### Type Expressions
-
-| Node           | Methods                                                                                                           |
-|----------------|-------------------------------------------------------------------------------------------------------------------|
-| `Path`         | `names : ArrayLiteral(MacroId)`, `global?`, `resolve`, `resolve?`, `types` (the path itself, wrapped in an array) |
-| `Generic`      | `name : Path`, `type_vars`, `named_args : NamedTupleLiteral \| NilLiteral`, `resolve`, `resolve?`, `types`        |
-| `Union`        | `types`, `resolve`, `resolve?`                                                                                    |
-| `Metaclass`    | `instance`, `resolve`, `resolve?`                                                                                 |
-| `ProcNotation` | `inputs : ArrayLiteral(ASTNode)`, `output : ASTNode \| NilLiteral`, `resolve`, `resolve?`                         |
-
-`Path.deprecated global` is superseded by `global?`.
-
-### Macro-Internal Nodes
-
-| Node              | Methods                                                                |
-|-------------------|------------------------------------------------------------------------|
-| `MacroExpression` | `exp`, `output?` (true for `{{ }}`, false for `{% %}`)                 |
-| `MacroLiteral`    | `value : MacroId`                                                      |
-| `MacroIf`         | `cond`, `then`, `else`, `is_unless?`                                   |
-| `MacroFor`        | `vars : ArrayLiteral(Var)`, `exp`, `body`                              |
-| `MacroVar`        | `name : MacroId`, `expressions : ArrayLiteral` (the keys of `%v{...}`) |
-| `MacroVerbatim`   | `exp`                                                                  |
-| `MacroId`         | String methods, plus `<` and `>`                                       |
-
-### TypeNode
-
-`TypeNode` represents a real program type. It is what `@type`, `@top_level`, resolved paths, and type-valued constants produce.
-
-**Kind predicates**
-
-| Method                            | Returns         |
-|-----------------------------------|-----------------|
-| `abstract?`, `union?`, `nilable?` | `BoolLiteral`   |
-| `module?`, `class?`, `struct?`    | `BoolLiteral`   |
-| `private?`, `public?`             | `BoolLiteral`   |
-| `visibility`                      | `SymbolLiteral` |
-
-**Identity**
-
-| Method                         | Returns                  | Description                                                               |
-|--------------------------------|--------------------------|---------------------------------------------------------------------------|
-| `name(*, generic_args = true)` | `MacroId`                | Fully qualified name, e.g. `Foo(T)`, or `Foo` with `generic_args: false`. |
-| `type_vars`                    | `ArrayLiteral(TypeNode)` | Generic arguments.                                                        |
-| `union_types`                  | `ArrayLiteral(TypeNode)` | Union members, or `[self]` for a non-union.                               |
-| `class`                        | `TypeNode`               | The metaclass.                                                            |
-| `instance`                     | `TypeNode`               | The instance type of a metaclass, otherwise `self`.                       |
-| `resolve`, `resolve?`          | `TypeNode`               | Return `self`.                                                            |
-
-**Hierarchy**
-
-| Method                     | Returns                  | Description                                    |
-|----------------------------|--------------------------|------------------------------------------------|
-| `superclass`               | `TypeNode \| NilLiteral` | Direct parent.                                 |
-| `ancestors`                | `ArrayLiteral(TypeNode)` | All ancestors.                                 |
-| `subclasses`               | `ArrayLiteral(TypeNode)` | Direct subclasses.                             |
-| `all_subclasses`           | `ArrayLiteral(TypeNode)` | All descendants.                               |
-| `includers`                | `ArrayLiteral(TypeNode)` | Types that include this module directly.       |
-| `<`, `<=`, `>`, `>=`       | `BoolLiteral`            | Subtype relations.                             |
-| `overrides?(type, method)` | `BoolLiteral`            | Whether `self` overrides `method` from `type`. |
-
-**Members**
-
-| Method                                           | Returns                         | Description                                        |
-|--------------------------------------------------|---------------------------------|----------------------------------------------------|
-| `instance_vars`                                  | `ArrayLiteral(MetaVar)`         | Instance variables; only reliable inside a method. |
-| `class_vars`                                     | `ArrayLiteral(MetaVar)`         | Class variables.                                   |
-| `constants`                                      | `ArrayLiteral(MacroId)`         | Constant and nested type names.                    |
-| `constant(name)`                                 | `ASTNode`                       | The value, a `TypeNode`, or `NilLiteral`.          |
-| `has_constant?(name)`                            | `BoolLiteral`                   | Constant presence.                                 |
-| `methods`                                        | `ArrayLiteral(Def)`             | Own instance methods.                              |
-| `all_methods`                                    | `ArrayLiteral(Def)`             | Instance methods, including inherited ones.        |
-| `has_method?(name)`                              | `BoolLiteral`                   | Method presence.                                   |
-| `annotation(T)`, `annotations(T)`, `annotations` | see [Annotations](#annotations) |                                                    |
-
-**Tuple and NamedTuple types**
-
-| Method    | Returns                  | Description               |
-|-----------|--------------------------|---------------------------|
-| `size`    | `NumberLiteral`          | Element count.            |
-| `keys`    | `ArrayLiteral(MacroId)`  | Named tuple keys.         |
-| `[](key)` | `TypeNode \| NilLiteral` | Named tuple element type. |
-
-**Memory**
-
-| Method                | Returns       | Description                                                                                                                |
-|-----------------------|---------------|----------------------------------------------------------------------------------------------------------------------------|
-| `has_inner_pointers?` | `BoolLiteral` | Whether the type contains inner pointers; types without them may use atomic GC allocations. Only reliable inside a method. |
-
-To get class methods, go through the metaclass:
-
-```crystal
-{{ Foo.class.methods.map &.name }}
-```
-
----
-
-## Pitfalls
-
-**Generated code must be complete.** A macro region cannot emit fragments such as bare `when` branches or a `def` without its `end`. Wrap the enclosing construct in `{% begin %} ... {% end %}` so the whole thing is generated together.
-
-**Use `.id` for identifiers.** Interpolating a symbol or string pastes it with its quoting intact (`:foo`, `"foo"`), which is not a valid identifier.
-
-**Local variable capture.** A plain local variable in generated code can overwrite the caller's variable of the same name. Use `%fresh` variables instead.
-
-**Comments do not disable macros.** Macro directives inside comments are still evaluated.
-
-**Evaluation order.** Reflection results reflect only what has been processed so far. Use the `finished` hook, or a macro def, when you need complete type information.
-
-**Context-sensitive results.** `instance_vars` and `has_inner_pointers?` require method context. `doc` and `doc_comment` require `crystal docs`.
-
-**Compile-time side effects.** Backtick commands, `system`, and `run` execute on every compilation. Keep them fast and deterministic, because `run` executables may be cached.
+# Part II — Macro Language Reference
+
+The methods below are the fixed subset of methods callable on AST nodes at compile time. They are documented in the compiler as the fictitious module `Crystal::Macros`. Node classes marked *abstract* exist only as a common base for other nodes.
+
+## Top-level methods
+
+These are invoked without a receiver anywhere `{{ }}` / `{% %}` is allowed.
+
+| Method                     | Returns                                        | Description                                                                                                                                                     |
+|----------------------------|------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `compare_versions(v1, v2)` | `NumberLiteral`                                | Compares two semantic versions; `-1`, `0` or `1`.                                                                                                               |
+| `debug(format = true)`     | `Nop`                                          | Outputs the current macro's buffer to stdout; formatted unless `format: false`.                                                                                 |
+| `env(name)`                | `StringLiteral \| NilLiteral`                  | Value of an environment variable at compile time, or `nil`.                                                                                                     |
+| `flag?(name)`              | `BoolLiteral`                                  | Whether a compile-time flag is set for the target platform.                                                                                                     |
+| `host_flag?(name)`         | `BoolLiteral`                                  | Whether a compile-time flag is set for the host platform (differs from `flag?` when cross-compiling).                                                           |
+| `parse_type(type_name)`    | `Path \| Generic \| ProcNotation \| Metaclass` | Parses a string into a type grammar node; use `#resolve` on the result. Compile-time error if the type/constant doesn't exist or a generic argument is missing. |
+| `puts(*expressions)`       | `Nop`                                          | Prints AST nodes at compile time (debugging).                                                                                                                   |
+| `print(*expressions)`      | `Nop`                                          | Prints AST nodes at compile time (debugging).                                                                                                                   |
+| `p(*expressions)`          | `Nop`                                          | Same as `puts`.                                                                                                                                                 |
+| `pp(*expressions)`         | `Nop`                                          | Same as `puts`.                                                                                                                                                 |
+| `p!(*expressions)`         | `Nop`                                          | Prints macro expressions together with their values.                                                                                                            |
+| `pp!(*expressions)`        | `Nop`                                          | Same as `p!`.                                                                                                                                                   |
+| `` `(command) `` | `MacroId` | Executes a system command, returns its output; compile-time error on failure. Invoked via command literals: `` {{ `echo hi` }} ``. |
+| `system(command)` | `MacroId` | Same as the backtick form: `{{ system("echo hi") }}`. |
+| `raise(message)` | `NoReturn` | Gives a compile-time error with the message. |
+| `warning(message)` | `NilLiteral` | Emits a compile-time warning. |
+| `file_exists?(filename)` | `BoolLiteral` | Whether the given file exists. |
+| `read_file(filename)` | `StringLiteral` | Reads a file; compile-time error if missing/unreadable. Relative paths resolve against the current working directory — prefer `"#{__DIR__}/file"`. |
+| `read_file?(filename)` | `StringLiteral \| NilLiteral` | Like `read_file`, but returns `nil` on any I/O failure. |
+| `run(filename, *args)` | `MacroId` | Compiles and executes a Crystal program, returning its output. The compiler may cache the executable (recompiling only on dependency mtime changes); keep the program deterministic and fast. |
+| `skip_file` | `Nop` | Skips the rest of the file it is executed in: `{% skip_file unless flag?(:darwin) %}`. |
+| `sizeof(type)` | `NumberLiteral` | Size of a *stable* type in bytes. `type` must be a constant; not evaluable at macro time nor a `typeof`. |
+| `alignof(type)` | `NumberLiteral` | Alignment of a *stable* type in bytes; same restrictions as `sizeof`. |
+
+A type is **stable** for `sizeof`/`alignof` if its size and alignment cannot change as new code is processed. All types are stable except: structs (e.g. `Bytes`), `ReferenceStorage` instances, modules (e.g. `Math` — but `Math.class` is stable), uninstantiated generics (e.g. `Array`), `StaticArray`/`Tuple`/`NamedTuple` with unstable element types, and unions containing unstable types.
+
+## `ASTNode` (base of all nodes)
+
+The base class of all AST nodes; these methods are available on **every** node listed below.
+
+| Method              | Returns                       | Description                                                                                                                                                                             |
+|---------------------|-------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `id`                | `MacroId`                     | This node as an identifier. Useful to get an identifier out of a `StringLiteral`, `SymbolLiteral`, `Var` or `Call`.                                                                     |
+| `stringify`         | `StringLiteral`               | This node's textual representation. On a string literal the result still contains the quotes.                                                                                           |
+| `symbolize`         | `SymbolLiteral`               | This node's textual representation as a symbol: `{{ "foo".id.symbolize }} # => :foo`.                                                                                                   |
+| `class_name`        | `StringLiteral`               | This node's class name, e.g. `"StringLiteral"`.                                                                                                                                         |
+| `filename`          | `StringLiteral \| NilLiteral` | Filename where this node is located, if known.                                                                                                                                          |
+| `line_number`       | `StringLiteral \| NilLiteral` | Line where this node begins (1-based), if known.                                                                                                                                        |
+| `column_number`     | `StringLiteral \| NilLiteral` | Column where this node begins (1-based), if known.                                                                                                                                      |
+| `end_line_number`   | `StringLiteral \| NilLiteral` | Line where this node ends (1-based), if known.                                                                                                                                          |
+| `end_column_number` | `StringLiteral \| NilLiteral` | Column where this node ends (1-based), if known.                                                                                                                                        |
+| `==(other)`         | `BoolLiteral`                 | Whether this node's textual representation equals *other*'s.                                                                                                                            |
+| `!=(other)`         | `BoolLiteral`                 | Whether this node's textual representation differs from *other*'s.                                                                                                                      |
+| `raise(message)`    | `NoReturn`                    | Compile-time error highlighting this node.                                                                                                                                              |
+| `warning(message)`  | `NilLiteral`                  | Compile-time warning highlighting this node.                                                                                                                                            |
+| `doc`               | `StringLiteral`               | Documentation comments attached to this node, or `""`. Empty outside of `crystal docs`.                                                                                                 |
+| `doc_comment`       | `MacroId`                     | Documentation comments, each line prefixed with `#` so the output can be spliced into another node's docs (see *merging expansion and call comments*). Empty outside of `crystal docs`. |
+| `is_a?(type)`       | `BoolLiteral`                 | Whether this node's type is the given **AST node** type (or a subclass): `{{ 1.is_a?(NumberLiteral) }} # => true`. Never refers to program types.                                       |
+| `nil?`              | `BoolLiteral`                 | Whether this node is a `NilLiteral` or `Nop`.                                                                                                                                           |
+
+## Literal nodes
+
+### `Nop`
+
+The empty node. Similar to `NilLiteral`, but its textual representation is the empty string — e.g. the missing `else` branch of an `if` without `else`. Adds no methods.
+
+### `NilLiteral`
+
+The `nil` literal. Adds no methods.
+
+### `BoolLiteral`
+
+A `true`/`false` literal. Adds no methods.
+
+### `NumberLiteral`
+
+Any number literal.
+
+| Method                    | Returns         | Description                                                     |
+|---------------------------|-----------------|-----------------------------------------------------------------|
+| `zero?`                   | `BoolLiteral`   | Whether the value is `0`.                                       |
+| `<`, `<=`, `>`, `>=`      | `BoolLiteral`   | Value comparison against another `NumberLiteral`.               |
+| `<=>(other)`              | `NumberLiteral` | Comparison returning `-1`, `0` or `1`.                          |
+| `+`, `-`, `*`             | `NumberLiteral` | Same as `Number#+`, `Number#-`, `Number#*`.                     |
+| `//`, `%`                 | `NumberLiteral` | Same as `Number#//`, `Number#%`.                                |
+| `&`, `\|`, `^`            | `NumberLiteral` | Bitwise operators.                                              |
+| `**`                      | `NumberLiteral` | Same as `Number#**`.                                            |
+| `<<`, `>>`                | `NumberLiteral` | Shift operators.                                                |
+| unary `+`, unary `-`, `~` | `NumberLiteral` | Unary operators.                                                |
+| `kind`                    | `SymbolLiteral` | The literal's type suffix: `:i32`, `:u16`, `:f32`, `:f64`, etc. |
+| `to_number`               | `MacroId`       | The value without a type suffix.                                |
+
+Note: `/` (exact float division) is **not** available on `NumberLiteral` — use `//` (floored division), which works for integer literals.
+
+### `CharLiteral`
+
+A character literal.
+
+| Method | Returns         | Description                |
+|--------|-----------------|----------------------------|
+| `id`   | `MacroId`       | This character's contents. |
+| `ord`  | `NumberLiteral` | Similar to `Char#ord`.     |
+
+### String-like nodes: `StringLiteral`, `SymbolLiteral`, `MacroId`
+
+These three node types share one set of string methods (the compiler defines them once and mixes them into all three classes; return types written `Self`-like below return the receiver's own node type). They are listed here once.
+
+| Method                     | Returns                                                                    | Description                                                                                                                                                                                                                                                                                                       |
+|----------------------------|----------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `id`                       | `MacroId`                                                                  | A `MacroId` for this string's contents.                                                                                                                                                                                                                                                                           |
+| `[](range)`                | `Self`                                                                     | Similar to `String#[]`.                                                                                                                                                                                                                                                                                           |
+| `=~(regex)`                | `BoolLiteral`                                                              | Similar to `String#matches?`.                                                                                                                                                                                                                                                                                     |
+| `+(other)`                 | `Self`                                                                     | Similar to `String#+` (other: `StringLiteral \| CharLiteral`).                                                                                                                                                                                                                                                    |
+| `camelcase(lower: false)`  | `Self`                                                                     | Similar to `String#camelcase`.                                                                                                                                                                                                                                                                                    |
+| `capitalize`               | `Self`                                                                     | Similar to `String#capitalize`.                                                                                                                                                                                                                                                                                   |
+| `chars`                    | `ArrayLiteral(CharLiteral)`                                                | Similar to `String#chars`.                                                                                                                                                                                                                                                                                        |
+| `chomp`                    | `Self`                                                                     | Similar to `String#chomp`.                                                                                                                                                                                                                                                                                        |
+| `count(other)`             | `NumberLiteral`                                                            | Similar to `String#count`.                                                                                                                                                                                                                                                                                        |
+| `downcase`                 | `Self`                                                                     | Similar to `String#downcase`.                                                                                                                                                                                                                                                                                     |
+| `empty?`                   | `BoolLiteral`                                                              | Similar to `String#empty?`.                                                                                                                                                                                                                                                                                       |
+| `ends_with?(other)`        | `BoolLiteral`                                                              | Similar to `String#ends_with?`.                                                                                                                                                                                                                                                                                   |
+| `gsub(regex, &block)`      | `Self`                                                                     | Similar to `String#gsub(pattern, options, &)`. The special variables `$~`, `$1`, … are **not** supported; the block receives the match string and an `ArrayLiteral(StringLiteral \| NilLiteral)` of captures.                                                                                                     |
+| `gsub(regex, replacement)` | `Self`                                                                     | Similar to `String#gsub`.                                                                                                                                                                                                                                                                                         |
+| `includes?(search)`        | `BoolLiteral`                                                              | Similar to `String#includes?`.                                                                                                                                                                                                                                                                                    |
+| `match(regex)`             | `HashLiteral(NumberLiteral \| StringLiteral, StringLiteral \| NilLiteral)` | Capture hash for the match (same form as `Regex::MatchData#to_h`), or `nil`.                                                                                                                                                                                                                                      |
+| `scan(regex)`              | `ArrayLiteral(HashLiteral(...))`                                           | A capture hash per match of *regex*.                                                                                                                                                                                                                                                                              |
+| `size`                     | `NumberLiteral`                                                            | Similar to `String#size`.                                                                                                                                                                                                                                                                                         |
+| `lines`                    | `ArrayLiteral(StringLiteral)`                                              | Similar to `String#lines`.                                                                                                                                                                                                                                                                                        |
+| `split`                    | `ArrayLiteral(StringLiteral)`                                              | Similar to `String#split()`.                                                                                                                                                                                                                                                                                      |
+| `split(node)`              | `ArrayLiteral(StringLiteral)`                                              | Overloads for `StringLiteral`, `CharLiteral` and `RegexLiteral`. The `split(ASTNode)` overload is **deprecated** — use `split(StringLiteral)`.                                                                                                                                                                    |
+| `starts_with?(other)`      | `BoolLiteral`                                                              | Similar to `String#starts_with?`.                                                                                                                                                                                                                                                                                 |
+| `strip`                    | `Self`                                                                     | Similar to `String#strip`.                                                                                                                                                                                                                                                                                        |
+| `titleize`                 | `Self`                                                                     | Similar to `String#titleize`.                                                                                                                                                                                                                                                                                     |
+| `to_i(base = 10)`          | `NumberLiteral`                                                            | Similar to `String#to_i`.                                                                                                                                                                                                                                                                                         |
+| `to_utf16`                 | `ASTNode`                                                                  | **Experimental.** Expression evaluating to a slice literal of UTF-16 code units plus a trailing null (not part of the slice) so `#to_unsafe` is always null-terminated: `{{ "abc😂".to_utf16 }} # => ::Slice(::UInt16).literal(97, 98, 99, 55357, 56834, 0)[0, 5]`. The result is not necessarily a literal node. |
+| `tr(from, to)`             | `Self`                                                                     | Similar to `String#tr`.                                                                                                                                                                                                                                                                                           |
+| `underscore`               | `Self`                                                                     | Similar to `String#underscore`.                                                                                                                                                                                                                                                                                   |
+| `upcase`                   | `Self`                                                                     | Similar to `String#upcase`.                                                                                                                                                                                                                                                                                       |
+
+Additionally, `StringLiteral` and `MacroId` have:
+
+| Method                 | Returns       | Description                                                             |
+|------------------------|---------------|-------------------------------------------------------------------------|
+| `>(other)`, `<(other)` | `BoolLiteral` | Similar to `String#>` / `String#<` (other: `StringLiteral \| MacroId`). |
+
+And `StringLiteral` alone has:
+
+| Method     | Returns         | Description                         |
+|------------|-----------------|-------------------------------------|
+| `*(other)` | `StringLiteral` | Similar to `String#*` (repetition). |
+
+### `StringInterpolation`
+
+An interpolated string like `"Hello, #{name}!"`.
+
+| Method        | Returns                 | Description                                                                                                             |
+|---------------|-------------------------|-------------------------------------------------------------------------------------------------------------------------|
+| `expressions` | `ArrayLiteral(ASTNode)` | The parts of the interpolation, alternating `StringLiteral` (plaintext) and arbitrary nodes (interpolated expressions). |
+
+### `ArrayLiteral`
+
+An array literal, e.g. `[1, 2, 3]`.
+
+| Method                                       | Returns                               | Description                                                                                                        |
+|----------------------------------------------|---------------------------------------|--------------------------------------------------------------------------------------------------------------------|
+| `any?(&)`, `all?(&)`                         | `BoolLiteral`                         | Similar to `Enumerable#any?` / `#all?`.                                                                            |
+| `splat(trailing_string = nil)`               | `MacroId`                             | All elements joined by commas; *trailing_string* is appended unless empty — splat with an optional trailing comma. |
+| `clear`                                      | `ArrayLiteral`                        | Similar to `Array#clear`.                                                                                          |
+| `empty?`                                     | `BoolLiteral`                         | Similar to `Array#empty?`.                                                                                         |
+| `find(&)`                                    | `ASTNode \| NilLiteral`               | Similar to `Enumerable#find`.                                                                                      |
+| `first`                                      | `ASTNode \| NilLiteral`               | Like `Array#first`, but `NilLiteral` when empty.                                                                   |
+| `includes?(node)`                            | `BoolLiteral`                         | Similar to `Enumerable#includes?(obj)`.                                                                            |
+| `join(separator)`                            | `StringLiteral`                       | Similar to `Enumerable#join`.                                                                                      |
+| `last`                                       | `ASTNode \| NilLiteral`               | Like `Array#last`, but `NilLiteral` when empty.                                                                    |
+| `size`                                       | `NumberLiteral`                       | Similar to `Array#size`.                                                                                           |
+| `map(&)`, `map_with_index(&)`                | `ArrayLiteral`                        | Similar to `Enumerable#map` / `#map_with_index`.                                                                   |
+| `each(&)`, `each_with_index(&)`              | `NilLiteral`                          | Similar to `Array#each` / `Enumerable#each_with_index`.                                                            |
+| `select(&)`, `reject(&)`                     | `ArrayLiteral`                        | Similar to `Enumerable#select` / `#reject`.                                                                        |
+| `reduce(&)`, `reduce(memo, &)`               | `ASTNode`                             | Similar to `Enumerable#reduce`.                                                                                    |
+| `shuffle`                                    | `ArrayLiteral`                        | Similar to `Array#shuffle`.                                                                                        |
+| `sort`, `sort_by(&)`                         | `ArrayLiteral`                        | Similar to `Array#sort` / `#sort_by`.                                                                              |
+| `uniq`                                       | `ArrayLiteral`                        | Similar to `Array#uniq`.                                                                                           |
+| `[](index)`                                  | `ASTNode`                             | Similar to `Array#[]?(Int)`.                                                                                       |
+| `[](range)`                                  | `ArrayLiteral(ASTNode) \| NilLiteral` | Similar to `Array#[]?(Range)`.                                                                                     |
+| `[](start, count)`                           | `ArrayLiteral(ASTNode) \| NilLiteral` | Similar to `Array#[]?(Int, Int)`.                                                                                  |
+| `[]=(index, value)`                          | `ASTNode`                             | Similar to `Array#[]=`.                                                                                            |
+| `unshift(value)`, `push(value)`, `<<(value)` | `ArrayLiteral`                        | Similar to `Array#unshift` / `#push` / `#<<`.                                                                      |
+| `+(other)`, `-(other)`                       | `ArrayLiteral`                        | Similar to `Array#+` / `#-`.                                                                                       |
+| `*(other)`                                   | `ArrayLiteral`                        | Similar to `Array#*`.                                                                                              |
+| `of`                                         | `ASTNode \| Nop`                      | The element type written after the brackets in `[] of String`, if any.                                             |
+| `type`                                       | `Path \| Nop`                         | The receiver type in `MyArray{1, 2, 3}`, if any.                                                                   |
+
+### `HashLiteral`
+
+A hash literal, e.g. `{"a" => 1}`.
+
+| Method                                | Returns                      | Description                                                                                                              |
+|---------------------------------------|------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| `clear`                               | `HashLiteral`                | Similar to `Hash#clear`.                                                                                                 |
+| `each(&)`                             | `NilLiteral`                 | Similar to `Hash#each`.                                                                                                  |
+| `empty?`                              | `BoolLiteral`                | Similar to `Hash#empty?`.                                                                                                |
+| `keys`                                | `ArrayLiteral`               | Similar to `Hash#keys`.                                                                                                  |
+| `size`                                | `NumberLiteral`              | Similar to `Hash#size`.                                                                                                  |
+| `to_a`                                | `ArrayLiteral(TupleLiteral)` | Similar to `Hash#to_a`.                                                                                                  |
+| `values`                              | `ArrayLiteral`               | Similar to `Hash#values`.                                                                                                |
+| `map(&)`                              | `ArrayLiteral`               | Similar to `Hash#map`.                                                                                                   |
+| `select(&)`                           | `HashLiteral`                | Similar to `Hash#select`.                                                                                                |
+| `select(*keys)`                       | `HashLiteral`                | New hash with only the given keys.                                                                                       |
+| `reject(&)`                           | `HashLiteral`                | Similar to `Hash#reject`.                                                                                                |
+| `reject(*keys)`                       | `HashLiteral`                | New hash without the given keys.                                                                                         |
+| `[](key)`                             | `ASTNode`                    | Similar to `Hash#[]?`.                                                                                                   |
+| `[]=(key, value)`                     | `ASTNode`                    | Similar to `Hash#[]=`.                                                                                                   |
+| `has_key?(key)`                       | `BoolLiteral`                | Similar to `Hash#has_key?`.                                                                                              |
+| `of_key`                              | `ASTNode \| Nop`             | Key type in `{} of String => Int32`, if any.                                                                             |
+| `of_value`                            | `ASTNode \| Nop`             | Value type in `{} of String => Int32`, if any.                                                                           |
+| `type`                                | `Path \| Nop`                | The receiver type in `MyHash{'a' => 1}`, if any.                                                                         |
+| `double_splat(trailing_string = nil)` | `MacroId`                    | All entries joined by commas, with an optional trailing string unless empty — double-splat with optional trailing comma. |
+
+### `NamedTupleLiteral`
+
+A named tuple literal, e.g. `{a: 1, b: 2}`.
+
+| Method                                | Returns                      | Description                                                                             |
+|---------------------------------------|------------------------------|-----------------------------------------------------------------------------------------|
+| `each(&)`, `each_with_index(&)`       | `NilLiteral`                 | Similar to `NamedTuple#each` / `#each_with_index`.                                      |
+| `empty?`                              | `BoolLiteral`                | Similar to `NamedTuple#empty?`.                                                         |
+| `keys`                                | `ArrayLiteral`               | Similar to `NamedTuple#keys`.                                                           |
+| `size`                                | `NumberLiteral`              | Similar to `NamedTuple#size`.                                                           |
+| `to_a`                                | `ArrayLiteral(TupleLiteral)` | Similar to `NamedTuple#to_a`.                                                           |
+| `values`                              | `ArrayLiteral`               | Similar to `NamedTuple#values`.                                                         |
+| `map(&)`                              | `ArrayLiteral`               | Similar to `NamedTuple#map`.                                                            |
+| `select(&)`                           | `NamedTupleLiteral`          | Similar to `Hash#select`.                                                               |
+| `select(*keys)`                       | `NamedTupleLiteral`          | New named tuple with only the given keys (`SymbolLiteral \| StringLiteral \| MacroId`). |
+| `reject(&)`                           | `NamedTupleLiteral`          | Similar to `Hash#reject`.                                                               |
+| `reject(*keys)`                       | `NamedTupleLiteral`          | New named tuple without the given keys.                                                 |
+| `double_splat(trailing_string = nil)` | `MacroId`                    | Similar to `HashLiteral#double_splat`.                                                  |
+| `[](key)`                             | `ASTNode`                    | Similar to `NamedTuple#[]`, but `NilLiteral` if *key* is undefined.                     |
+| `[]=(key, value)`                     | `ASTNode`                    | Adds or replaces a key.                                                                 |
+| `has_key?(key)`                       | `BoolLiteral`                | Similar to `NamedTuple#has_key?`.                                                       |
+
+### `RangeLiteral`
+
+A range literal, e.g. `(1..5)`.
+
+| Method          | Returns        | Description                                                                      |
+|-----------------|----------------|----------------------------------------------------------------------------------|
+| `begin`         | `ASTNode`      | Similar to `Range#begin`.                                                        |
+| `each(&)`       | `NilLiteral`   | Similar to `Range#each`.                                                         |
+| `end`           | `ASTNode`      | Similar to `Range#end`.                                                          |
+| `excludes_end?` | `BoolLiteral`  | Similar to `Range#excludes_end?`.                                                |
+| `map(&)`        | `ArrayLiteral` | Like `Enumerable#map` for a range; only for ranges of integer `NumberLiteral`s.  |
+| `to_a`          | `ArrayLiteral` | Like `Enumerable#to_a` for a range; only for ranges of integer `NumberLiteral`s. |
+
+### `RegexLiteral`
+
+A regular expression literal, e.g. `/foo/i`.
+
+| Method    | Returns                                | Description                                                |
+|-----------|----------------------------------------|------------------------------------------------------------|
+| `source`  | `StringLiteral \| StringInterpolation` | Similar to `Regex#source`.                                 |
+| `options` | `ArrayLiteral(SymbolLiteral)`          | Like `Regex#options`, but as symbols, e.g. `[:i, :m, :x]`. |
+
+### `TupleLiteral`
+
+A tuple literal, e.g. `{1, "a"}`. Its methods mirror `ArrayLiteral`'s, with tuple-preserving return types.
+
+| Method                                       | Returns                      | Description                                                       |
+|----------------------------------------------|------------------------------|-------------------------------------------------------------------|
+| `any?(&)`, `all?(&)`                         | `BoolLiteral`                | Similar to `Enumerable#any?` / `#all?`.                           |
+| `splat(trailing_string = nil)`               | `MacroId`                    | Elements joined by commas, optional trailing string unless empty. |
+| `empty?`                                     | `BoolLiteral`                | Similar to `Tuple#empty?`.                                        |
+| `find(&)`                                    | `ASTNode \| NilLiteral`      | Similar to `Enumerable#find`.                                     |
+| `first`                                      | `ASTNode \| NilLiteral`      | Like `Tuple#first`, but `NilLiteral` when empty.                  |
+| `includes?(node)`                            | `BoolLiteral`                | Similar to `Enumerable#includes?(obj)`.                           |
+| `join(separator)`                            | `StringLiteral`              | Similar to `Enumerable#join`.                                     |
+| `last`                                       | `ASTNode \| NilLiteral`      | Like `Tuple#last`, but `NilLiteral` when empty.                   |
+| `size`                                       | `NumberLiteral`              | Similar to `Tuple#size`.                                          |
+| `map(&)`, `map_with_index(&)`                | `TupleLiteral`               | Similar to `Enumerable#map` / `#map_with_index`.                  |
+| `each(&)`, `each_with_index(&)`              | `NilLiteral`                 | Similar to `Tuple#each` / `Enumerable#each_with_index`.           |
+| `select(&)`, `reject(&)`                     | `TupleLiteral`               | Similar to `Enumerable#select` / `#reject`.                       |
+| `reduce(&)`, `reduce(memo, &)`               | `ASTNode`                    | Similar to `Enumerable#reduce`.                                   |
+| `shuffle`                                    | `TupleLiteral`               | Similar to `Array#shuffle`.                                       |
+| `sort`, `sort_by(&)`                         | `TupleLiteral`               | Similar to `Array#sort` / `#sort_by`.                             |
+| `uniq`                                       | `TupleLiteral`               | Similar to `Array#uniq`.                                          |
+| `[](index)`                                  | `ASTNode`                    | Similar to `Tuple#[]?(Int)`.                                      |
+| `[](range)`                                  | `TupleLiteral \| NilLiteral` | Similar to `Tuple#[]?(Range)`.                                    |
+| `[](start, count)`                           | `TupleLiteral \| NilLiteral` | Like `Array#[]?(Int, Int)`, returning a `TupleLiteral`.           |
+| `[]=(index, value)`                          | `ASTNode`                    | Similar to `Array#[]=`.                                           |
+| `unshift(value)`, `push(value)`, `<<(value)` | `TupleLiteral`               | Similar to `Array#unshift` / `#push` / `#<<`.                     |
+| `+(other)`, `-(other)`                       | `TupleLiteral`               | Similar to `Tuple#+` / `Array#-`.                                 |
+| `*(other)`                                   | `TupleLiteral`               | Similar to `Tuple#*`.                                             |
+
+## Expression nodes
+
+### `MetaVar`
+
+A fictitious node representing a variable or instance variable together with type information (produced e.g. by `TypeNode#instance_vars`).
+
+| Method               | Returns                    | Description                                                                                                                          |
+|----------------------|----------------------------|--------------------------------------------------------------------------------------------------------------------------------------|
+| `name`               | `MacroId`                  | The variable's name.                                                                                                                 |
+| `type`               | `TypeNode \| NilLiteral`   | The variable's type, if known.                                                                                                       |
+| `default_value`      | `ASTNode`                  | The default value. A `NilLiteral` is returned both for "no default" and for a `nil` default — distinguish with `has_default_value?`. |
+| `has_default_value?` | `BoolLiteral`              | Whether the variable has a default value (which may itself be `nil`).                                                                |
+| `annotation(type)`   | `Annotation \| NilLiteral` | The last `Annotation` of the given type attached to this variable.                                                                   |
+| `annotations(type)`  | `ArrayLiteral(Annotation)` | All annotations of the given type attached to this variable.                                                                         |
+| `annotations`        | `ArrayLiteral(Annotation)` | All annotations attached to this variable.                                                                                           |
+
+### `Annotation`
+
+An annotation on top of a type or variable, e.g. `@[Field(name: "x")]`.
+
+| Method       | Returns             | Description                                                                                         |
+|--------------|---------------------|-----------------------------------------------------------------------------------------------------|
+| `name`       | `Path`              | The annotation's name.                                                                              |
+| `[](index)`  | `ASTNode`           | Value of a positional argument, or `NilLiteral` if out of bounds.                                   |
+| `[](name)`   | `ASTNode`           | Value of a named argument (`SymbolLiteral \| StringLiteral \| MacroId`), or `NilLiteral` if absent. |
+| `args`       | `TupleLiteral`      | The positional arguments.                                                                           |
+| `named_args` | `NamedTupleLiteral` | The named arguments.                                                                                |
+
+### `Var`
+
+A local variable or block argument.
+
+| Method | Returns   | Description      |
+|--------|-----------|------------------|
+| `id`   | `MacroId` | This var's name. |
+
+### `Block`
+
+A code block.
+
+| Method        | Returns                       | Description                          |
+|---------------|-------------------------------|--------------------------------------|
+| `body`        | `ASTNode`                     | The block's body, if any.            |
+| `args`        | `ArrayLiteral(MacroId)`       | The block's arguments.               |
+| `splat_index` | `NumberLiteral \| NilLiteral` | Index of the splat argument, if any. |
+
+### `Expressions`
+
+A group of expressions.
+
+| Method        | Returns                 | Description                           |
+|---------------|-------------------------|---------------------------------------|
+| `expressions` | `ArrayLiteral(ASTNode)` | The list of expressions in this node. |
+
+### `Call`
+
+A method call.
+
+| Method       | Returns                       | Description                                                     |
+|--------------|-------------------------------|-----------------------------------------------------------------|
+| `id`         | `MacroId`                     | This call's name as an identifier.                              |
+| `name`       | `MacroId`                     | The method name of this call.                                   |
+| `receiver`   | `ASTNode \| Nop`              | This call's receiver, if any.                                   |
+| `global?`    | `BoolLiteral`                 | Whether this call refers to a global method (starts with `::`). |
+| `args`       | `ArrayLiteral`                | This call's arguments.                                          |
+| `named_args` | `ArrayLiteral(NamedArgument)` | This call's named arguments.                                    |
+| `block`      | `Block \| Nop`                | This call's block, if any.                                      |
+| `block_arg`  | `ASTNode \| Nop`              | This call's block argument, if any.                             |
+
+### `NamedArgument`
+
+A call's named argument.
+
+| Method  | Returns   | Description           |
+|---------|-----------|-----------------------|
+| `name`  | `MacroId` | The argument's name.  |
+| `value` | `ASTNode` | The argument's value. |
+
+### `If`
+
+An `if` expression. (`unless` expressions in regular code are normalized to `If`; see `MacroIf` for macro-level `{% unless %}` — that node records which keyword was used.)
+
+| Method | Returns   | Description               |
+|--------|-----------|---------------------------|
+| `cond` | `ASTNode` | The condition.            |
+| `then` | `ASTNode` | The `then` clause's body. |
+| `else` | `ASTNode` | The `else` clause's body. |
+
+### `Assign`
+
+An assignment expression.
+
+| Method   | Returns   | Description               |
+|----------|-----------|---------------------------|
+| `target` | `ASTNode` | The target assigned to.   |
+| `value`  | `ASTNode` | The value being assigned. |
+
+### `MultiAssign`
+
+A multiple-assignment expression.
+
+| Method    | Returns                 | Description                |
+|-----------|-------------------------|----------------------------|
+| `targets` | `ArrayLiteral(ASTNode)` | The targets assigned to.   |
+| `values`  | `ArrayLiteral(ASTNode)` | The values being assigned. |
+
+### `InstanceVar`, `ClassVar`, `Global`
+
+An instance variable, class variable, or global variable.
+
+| Method | Returns   | Description          |
+|--------|-----------|----------------------|
+| `name` | `MacroId` | The variable's name. |
+
+### `ReadInstanceVar`
+
+Access to an instance variable through a receiver: `obj.@var`.
+
+| Method | Returns   | Description                            |
+|--------|-----------|----------------------------------------|
+| `obj`  | `ASTNode` | The object whose variable is accessed. |
+| `name` | `MacroId` | The instance variable's name.          |
+
+### `BinaryOp` (abstract), `And`, `Or`
+
+A binary expression like `&&` or `||`.
+
+| Method  | Returns   | Description          |
+|---------|-----------|----------------------|
+| `left`  | `ASTNode` | The left-hand side.  |
+| `right` | `ASTNode` | The right-hand side. |
+
+### `Arg`
+
+A `def` argument.
+
+| Method              | Returns                    | Description                                                      |
+|---------------------|----------------------------|------------------------------------------------------------------|
+| `name`              | `MacroId`                  | The **external** name — for `def write(to file)` returns `to`.   |
+| `internal_name`     | `MacroId`                  | The **internal** name — for `def write(to file)` returns `file`. |
+| `default_value`     | `ASTNode \| Nop`           | The default value, if any.                                       |
+| `restriction`       | `ASTNode \| Nop`           | The type restriction, if any.                                    |
+| `annotation(type)`  | `Annotation \| NilLiteral` | The last `Annotation` of the given type.                         |
+| `annotations(type)` | `ArrayLiteral(Annotation)` | All annotations of the given type.                               |
+| `annotations`       | `ArrayLiteral(Annotation)` | All annotations on this arg.                                     |
+
+### `Def`
+
+A method definition.
+
+| Method              | Returns                       | Description                                             |
+|---------------------|-------------------------------|---------------------------------------------------------|
+| `name`              | `MacroId`                     | The method's name.                                      |
+| `args`              | `ArrayLiteral(Arg)`           | The method's arguments.                                 |
+| `splat_index`       | `NumberLiteral \| NilLiteral` | Index of the splat argument, if any.                    |
+| `double_splat`      | `Arg \| Nop`                  | The double splat argument, if any.                      |
+| `block_arg`         | `Arg \| Nop`                  | The block argument, if any.                             |
+| `accepts_block?`    | `BoolLiteral`                 | Whether this method can be called with a block.         |
+| `return_type`       | `ASTNode \| Nop`              | The declared return type, if any.                       |
+| `free_vars`         | `ArrayLiteral(MacroId)`       | The method's free variables (empty if none).            |
+| `body`              | `ASTNode`                     | The method's body.                                      |
+| `receiver`          | `ASTNode \| Nop`              | The receiver (e.g. `self`), or `Nop`.                   |
+| `abstract?`         | `BoolLiteral`                 | Whether the method is declared `abstract`.              |
+| `visibility`        | `SymbolLiteral`               | `:public`, `:protected` or `:private`.                  |
+| `annotation(type)`  | `Annotation \| NilLiteral`    | The last `Annotation` of the given type on this method. |
+| `annotations(type)` | `ArrayLiteral(Annotation)`    | All annotations of the given type on this method.       |
+| `annotations`       | `ArrayLiteral(Annotation)`    | All annotations on this method.                         |
+
+### `Primitive`
+
+A fictitious node representing the body of a `Def` marked with `@[Primitive]`.
+
+| Method | Returns         | Description                                                                                                     |
+|--------|-----------------|-----------------------------------------------------------------------------------------------------------------|
+| `name` | `SymbolLiteral` | The primitive's name — identical to the `@[Primitive]` argument: `{{ Foo.methods.first.body.name }} # => :abc`. |
+
+### `Macro`
+
+A macro definition.
+
+| Method         | Returns                       | Description                            |
+|----------------|-------------------------------|----------------------------------------|
+| `name`         | `MacroId`                     | The macro's name.                      |
+| `args`         | `ArrayLiteral(Arg)`           | The macro's arguments.                 |
+| `splat_index`  | `NumberLiteral \| NilLiteral` | Index of the splat argument, if any.   |
+| `double_splat` | `Arg \| Nop`                  | The double splat argument, if any.     |
+| `block_arg`    | `Arg \| Nop`                  | The block argument, if any.            |
+| `body`         | `ASTNode`                     | The macro's body.                      |
+| `visibility`   | `SymbolLiteral`               | `:public`, `:protected` or `:private`. |
+
+### `UnaryExpression` (abstract)
+
+Base of unary expressions; subclasses: `Not` (`!`), `PointerOf` (`pointerof`), `SizeOf` (`sizeof`), `InstanceSizeOf` (`instance_sizeof`), `AlignOf` (`alignof`), `InstanceAlignOf` (`instance_alignof`), `Out` (`out`), `Splat` (`*exp`), `DoubleSplat` (`**exp`), and `MacroVerbatim`.
+
+| Method | Returns   | Description                              |
+|--------|-----------|------------------------------------------|
+| `exp`  | `ASTNode` | The expression the operation applies to. |
+
+### `OffsetOf`
+
+An `offsetof` expression.
+
+| Method   | Returns   | Description                                 |
+|----------|-----------|---------------------------------------------|
+| `type`   | `ASTNode` | The type used in the expression.            |
+| `offset` | `ASTNode` | The offset argument used in the expression. |
+
+### `VisibilityModifier`
+
+A visibility modifier (`private def foo`, …).
+
+| Method       | Returns         | Description                             |
+|--------------|-----------------|-----------------------------------------|
+| `visibility` | `SymbolLiteral` | `:public`, `:protected` or `:private`.  |
+| `exp`        | `ASTNode`       | The expression the modifier applies to. |
+
+### `IsA`
+
+An `.is_a?` or `.nil?` call.
+
+| Method     | Returns   | Description          |
+|------------|-----------|----------------------|
+| `receiver` | `ASTNode` | The call's receiver. |
+| `arg`      | `ASTNode` | The call's argument. |
+
+### `RespondsTo`
+
+A `.responds_to?` call.
+
+| Method     | Returns         | Description                    |
+|------------|-----------------|--------------------------------|
+| `receiver` | `ASTNode`       | The call's receiver.           |
+| `name`     | `StringLiteral` | The method name being checked. |
+
+### `Require`
+
+A `require` statement.
+
+| Method | Returns         | Description                    |
+|--------|-----------------|--------------------------------|
+| `path` | `StringLiteral` | The argument of the `require`. |
+
+### `When`
+
+A `when` or `in` inside a `case` or `select`.
+
+| Method        | Returns        | Description                          |
+|---------------|----------------|--------------------------------------|
+| `conds`       | `ArrayLiteral` | The conditions of this `when`.       |
+| `body`        | `ASTNode`      | The body of this `when`.             |
+| `exhaustive?` | `BoolLiteral`  | `true` for `in`, `false` for `when`. |
+
+### `Case`
+
+A `case` expression.
+
+| Method        | Returns              | Description                                  |
+|---------------|----------------------|----------------------------------------------|
+| `cond`        | `ASTNode`            | The condition (target) of the `case`.        |
+| `whens`       | `ArrayLiteral(When)` | The `when`s.                                 |
+| `else`        | `ASTNode`            | The `else`.                                  |
+| `exhaustive?` | `BoolLiteral`        | Whether this is an exhaustive `case ... in`. |
+
+### `Select`
+
+A `select` expression.
+
+| Method  | Returns              | Description  |
+|---------|----------------------|--------------|
+| `whens` | `ArrayLiteral(When)` | The `when`s. |
+| `else`  | `ASTNode`            | The `else`.  |
+
+### `ImplicitObj`
+
+The implicit object in a `case ... when .bar?` condition. Adds no methods.
+
+### `While`
+
+A `while` expression. (`until` is normalized to `While` with a negated condition.)
+
+| Method | Returns   | Description    |
+|--------|-----------|----------------|
+| `cond` | `ASTNode` | The condition. |
+| `body` | `ASTNode` | The body.      |
+
+### `Rescue`
+
+A `rescue` clause inside an exception handler.
+
+| Method  | Returns                      | Description                                         |
+|---------|------------------------------|-----------------------------------------------------|
+| `body`  | `ASTNode`                    | The clause's body.                                  |
+| `types` | `ArrayLiteral \| NilLiteral` | The rescued exception types, if any.                |
+| `name`  | `MacroId \| Nop`             | The variable name of the rescued exception, if any. |
+
+### `ExceptionHandler`
+
+A `begin ... end` expression with `rescue`/`else`/`ensure` clauses.
+
+| Method    | Returns                              | Description                       |
+|-----------|--------------------------------------|-----------------------------------|
+| `body`    | `ASTNode`                            | The main body.                    |
+| `rescues` | `ArrayLiteral(Rescue) \| NilLiteral` | The `rescue` clauses, if any.     |
+| `else`    | `ASTNode \| Nop`                     | The `else` clause body, if any.   |
+| `ensure`  | `ASTNode \| Nop`                     | The `ensure` clause body, if any. |
+
+### `ProcLiteral`
+
+A proc literal: `->(arg : String) { puts arg }`.
+
+| Method        | Returns             | Description                       |
+|---------------|---------------------|-----------------------------------|
+| `args`        | `ArrayLiteral(Arg)` | The proc's arguments.             |
+| `body`        | `ASTNode`           | The proc's body.                  |
+| `return_type` | `ASTNode \| Nop`    | The declared return type, if any. |
+
+### `ProcPointer`
+
+A proc pointer: `->my_var.some_method(String)`.
+
+| Method    | Returns                 | Description                                                                  |
+|-----------|-------------------------|------------------------------------------------------------------------------|
+| `args`    | `ArrayLiteral(ASTNode)` | The argument types.                                                          |
+| `obj`     | `ASTNode \| NilLiteral` | The receiver, or `nil` if unattached.                                        |
+| `name`    | `MacroId`               | The method this proc points to.                                              |
+| `global?` | `BoolLiteral`           | Whether it refers to a global method (starts with `::` and has no receiver). |
+
+### `Self`
+
+The `self` expression, in code or type names. Adds no methods.
+
+### `ControlExpression` (abstract), `Return`, `Break`, `Next`
+
+Base of control-flow expressions.
+
+| Method | Returns          | Description                                                                      |
+|--------|------------------|----------------------------------------------------------------------------------|
+| `exp`  | `ASTNode \| Nop` | The argument, if any. Multiple arguments are wrapped in a single `TupleLiteral`. |
+
+### `Yield`
+
+A `yield` expression.
+
+| Method        | Returns          | Description                                                         |
+|---------------|------------------|---------------------------------------------------------------------|
+| `expressions` | `ArrayLiteral`   | The arguments to the `yield`.                                       |
+| `scope`       | `ASTNode \| Nop` | The scope — the part after `with` in a `with ... yield` expression. |
+
+### `Include` / `Extend`
+
+An `include` or `extend` statement.
+
+| Method | Returns   | Description                                   |
+|--------|-----------|-----------------------------------------------|
+| `name` | `ASTNode` | The name of the type being included/extended. |
+
+### `Alias`
+
+An `alias` statement.
+
+| Method | Returns   | Description                           |
+|--------|-----------|---------------------------------------|
+| `name` | `Path`    | The alias's name.                     |
+| `type` | `ASTNode` | The type this alias is equivalent to. |
+
+### `Cast` / `NilableCast`
+
+A cast call: `obj.as(to)` / `obj.as?(to)`.
+
+| Method | Returns   | Description                  |
+|--------|-----------|------------------------------|
+| `obj`  | `ASTNode` | The object being cast.       |
+| `to`   | `ASTNode` | The target type of the cast. |
+
+### `TypeOf`
+
+A `typeof` expression.
+
+| Method | Returns                 | Description                    |
+|--------|-------------------------|--------------------------------|
+| `args` | `ArrayLiteral(ASTNode)` | The arguments to the `typeof`. |
+
+## Definition nodes
+
+### `ClassDef`
+
+A class or struct definition.
+
+| Method                     | Returns                       | Description                                                                                                                                                                              |
+|----------------------------|-------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `abstract?`                | `BoolLiteral`                 | Whether this defines an abstract class or struct.                                                                                                                                        |
+| `kind`                     | `MacroId`                     | The keyword used: `class` or `struct`.                                                                                                                                                   |
+| `name(generic_args: true)` | `Path \| Generic`             | The type's name. With *generic_args* true and a generic definition, returns a `Generic` whose arguments are `MacroId`s (possibly with a `Splat` at the splat index); otherwise a `Path`. |
+| `superclass`               | `ASTNode`                     | The superclass, or `Nop` if unspecified.                                                                                                                                                 |
+| `body`                     | `ASTNode`                     | The definition's body.                                                                                                                                                                   |
+| `type_vars`                | `ArrayLiteral`                | `MacroId`s of the generic type parameters (empty for non-generics).                                                                                                                      |
+| `splat_index`              | `NumberLiteral \| NilLiteral` | Splat index of the generic type parameters, or `nil` if not generic / no splat.                                                                                                          |
+| `struct?`                  | `BoolLiteral`                 | Whether this defines a struct (`false` for a class).                                                                                                                                     |
+
+### `ModuleDef`
+
+A module definition.
+
+| Method                     | Returns                       | Description                                           |
+|----------------------------|-------------------------------|-------------------------------------------------------|
+| `kind`                     | `MacroId`                     | Always `module`.                                      |
+| `name(generic_args: true)` | `Path \| Generic`             | Same contract as `ClassDef#name`.                     |
+| `body`                     | `ASTNode`                     | The definition's body.                                |
+| `type_vars`                | `ArrayLiteral`                | Generic type parameters (empty for non-generics).     |
+| `splat_index`              | `NumberLiteral \| NilLiteral` | Splat index of the generic type parameters, or `nil`. |
+
+### `EnumDef`
+
+An enum definition.
+
+| Method                     | Returns   | Description                                                                     |
+|----------------------------|-----------|---------------------------------------------------------------------------------|
+| `kind`                     | `MacroId` | Always `enum`.                                                                  |
+| `name(generic_args: true)` | `Path`    | The enum's name (*generic_args* has no effect; it exists for interface parity). |
+| `base_type`                | `ASTNode` | The enum's base type, or `Nop` if unspecified.                                  |
+| `body`                     | `ASTNode` | The definition's body.                                                          |
+
+### `AnnotationDef`
+
+An annotation definition.
+
+| Method                     | Returns   | Description                                                    |
+|----------------------------|-----------|----------------------------------------------------------------|
+| `kind`                     | `MacroId` | Always `annotation`.                                           |
+| `name(generic_args: true)` | `Path`    | The annotation's name (*generic_args* has no effect).          |
+| `body`                     | `Nop`     | Always `Nop` — annotation definitions cannot contain anything. |
+
+### `LibDef`
+
+A lib definition.
+
+| Method                     | Returns   | Description                                    |
+|----------------------------|-----------|------------------------------------------------|
+| `kind`                     | `MacroId` | Always `lib`.                                  |
+| `name(generic_args: true)` | `Path`    | The lib's name (*generic_args* has no effect). |
+| `body`                     | `ASTNode` | The definition's body.                         |
+
+### `CStructOrUnionDef`
+
+A struct or union definition inside a lib.
+
+| Method                     | Returns       | Description                                     |
+|----------------------------|---------------|-------------------------------------------------|
+| `union?`                   | `BoolLiteral` | Whether this defines a C union.                 |
+| `kind`                     | `MacroId`     | `struct` or `union`.                            |
+| `name(generic_args: true)` | `Path`        | The type's name (*generic_args* has no effect). |
+| `body`                     | `ASTNode`     | The definition's body.                          |
+
+### `FunDef`
+
+A function declaration inside a lib, or a top-level C function definition.
+
+| Method        | Returns                | Description                                                                                           |
+|---------------|------------------------|-------------------------------------------------------------------------------------------------------|
+| `name`        | `MacroId`              | The function's name in Crystal.                                                                       |
+| `real_name`   | `StringLiteral \| Nop` | The real C name, if any.                                                                              |
+| `args`        | `ArrayLiteral(Arg)`    | The parameters (excluding the variadic parameter).                                                    |
+| `variadic?`   | `BoolLiteral`          | Whether the function is variadic.                                                                     |
+| `return_type` | `ASTNode \| Nop`       | The return type, if specified.                                                                        |
+| `body`        | `ASTNode \| Nop`       | The body, if any. Both lib funs and top-level funs may return `Nop` — use `has_body?` to distinguish. |
+| `has_body?`   | `BoolLiteral`          | Top-level funs have a body; lib funs do not.                                                          |
+
+### `TypeDef`
+
+A typedef inside a lib: `type Foo = Bar`.
+
+| Method | Returns   | Description                             |
+|--------|-----------|-----------------------------------------|
+| `name` | `Path`    | The typedef's name.                     |
+| `type` | `ASTNode` | The type this typedef is equivalent to. |
+
+### `ExternalVar`
+
+An external variable declaration inside a lib.
+
+| Method      | Returns                | Description                                              |
+|-------------|------------------------|----------------------------------------------------------|
+| `name`      | `MacroId`              | The variable's name in Crystal, without the leading `$`. |
+| `real_name` | `StringLiteral \| Nop` | The real C name, if any.                                 |
+| `type`      | `ASTNode`              | The variable's type.                                     |
+
+## Type grammar nodes
+
+These nodes appear in type positions — restrictions, declarations, generic arguments — and in the result of `parse_type`.
+
+### `Path`
+
+A path to a constant or type: `Foo`, `Foo::Bar::Baz`.
+
+| Method     | Returns                 | Description                                                                                                                  |
+|------------|-------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| `names`    | `ArrayLiteral(MacroId)` | Each separate part of the path.                                                                                              |
+| `global?`  | `BoolLiteral`           | Whether this is a global path (starts with `::`).                                                                            |
+| `global`   | `BoolLiteral`           | **Deprecated** — use `global?`.                                                                                              |
+| `resolve`  | `ASTNode`               | Resolves to a `TypeNode` for a type, to the constant's value for a constant; compile-time error otherwise.                   |
+| `resolve?` | `ASTNode \| NilLiteral` | Like `resolve`, but returns `NilLiteral` on failure.                                                                         |
+| `types`    | `ArrayLiteral(ASTNode)` | This path inside an array literal — lets you call `types` uniformly on any type grammar node (`Generic`, `Path` or `Union`). |
+
+### `Generic`
+
+A generic instantiation: `Foo(T)`, `Foo::Bar::Baz(T)`.
+
+| Method       | Returns                           | Description                                                              |
+|--------------|-----------------------------------|--------------------------------------------------------------------------|
+| `name`       | `Path`                            | The path to the generic.                                                 |
+| `type_vars`  | `ArrayLiteral(ASTNode)`           | The type arguments of the instantiation.                                 |
+| `named_args` | `NamedTupleLiteral \| NilLiteral` | The named arguments, if any.                                             |
+| `resolve`    | `ASTNode`                         | Resolves to a `TypeNode`; compile-time error otherwise.                  |
+| `resolve?`   | `ASTNode \| NilLiteral`           | Like `resolve`, but `NilLiteral` on failure.                             |
+| `types`      | `ArrayLiteral(ASTNode)`           | This generic inside an array literal (uniform access, see `Path#types`). |
+
+### `ProcNotation`
+
+The type of a proc or block argument: `String -> Int32`.
+
+| Method     | Returns                 | Description                                             |
+|------------|-------------------------|---------------------------------------------------------|
+| `inputs`   | `ArrayLiteral(ASTNode)` | The argument types (empty if none).                     |
+| `output`   | `ASTNode \| NilLiteral` | The output type, or `nil` if there is no return type.   |
+| `resolve`  | `ASTNode`               | Resolves to a `TypeNode`; compile-time error otherwise. |
+| `resolve?` | `ASTNode \| NilLiteral` | Like `resolve`, but `NilLiteral` on failure.            |
+
+### `Union`
+
+A type union: `(Int32 | String)`.
+
+| Method     | Returns                 | Description                                                                   |
+|------------|-------------------------|-------------------------------------------------------------------------------|
+| `types`    | `ArrayLiteral(ASTNode)` | The types of this union.                                                      |
+| `resolve`  | `ASTNode`               | Resolves to a `TypeNode`; compile-time error if any member can't be resolved. |
+| `resolve?` | `ASTNode \| NilLiteral` | Like `resolve`, but `NilLiteral` on failure.                                  |
+
+### `Metaclass`
+
+A metaclass in a type expression: `T.class`.
+
+| Method     | Returns                 | Description                                                |
+|------------|-------------------------|------------------------------------------------------------|
+| `instance` | `ASTNode`               | The node representing the instance type of this metaclass. |
+| `resolve`  | `ASTNode`               | Resolves to a `TypeNode`; compile-time error otherwise.    |
+| `resolve?` | `ASTNode \| NilLiteral` | Like `resolve`, but `NilLiteral` on failure.               |
+
+### `TypeDeclaration`
+
+A type declaration: `x : Int32`.
+
+| Method  | Returns          | Description                 |
+|---------|------------------|-----------------------------|
+| `var`   | `MacroId`        | The variable part.          |
+| `type`  | `ASTNode`        | The type part.              |
+| `value` | `ASTNode \| Nop` | The assigned value, if any. |
+
+### `UninitializedVar`
+
+An uninitialized declaration: `a = uninitialized Int32`.
+
+| Method | Returns   | Description        |
+|--------|-----------|--------------------|
+| `var`  | `MacroId` | The variable part. |
+| `type` | `ASTNode` | The type part.     |
+
+## Macro-internal nodes
+
+Nodes produced by parsing macro syntax itself.
+
+### `MacroExpression`
+
+A `{{ ... }}` or `{% ... %}` expression.
+
+| Method    | Returns       | Description                                                                                   |
+|-----------|---------------|-----------------------------------------------------------------------------------------------|
+| `exp`     | `ASTNode`     | The expression inside this node.                                                              |
+| `output?` | `BoolLiteral` | Whether this node interpolates the result (`{{ }}`) rather than just evaluating it (`{% %}`). |
+
+### `MacroLiteral`
+
+Free text that is part of a macro.
+
+| Method  | Returns   | Description              |
+|---------|-----------|--------------------------|
+| `value` | `MacroId` | The text of the literal. |
+
+### `MacroIf`
+
+An `{% if %}` / `{% unless %}` inside a macro.
+
+| Method       | Returns       | Description                               |
+|--------------|---------------|-------------------------------------------|
+| `cond`       | `ASTNode`     | The condition.                            |
+| `then`       | `ASTNode`     | The `then` branch.                        |
+| `else`       | `ASTNode`     | The `else` branch.                        |
+| `is_unless?` | `BoolLiteral` | Whether this node represents an `unless`. |
+
+### `MacroFor`
+
+A `{% for x in exp %}` loop inside a macro.
+
+| Method | Returns             | Description                         |
+|--------|---------------------|-------------------------------------|
+| `vars` | `ArrayLiteral(Var)` | The variables declared after `for`. |
+| `exp`  | `ASTNode`           | The expression after `in`.          |
+| `body` | `ASTNode`           | The loop body.                      |
+
+### `MacroVar`
+
+A macro fresh variable (`%var`, optionally indexed `%var{0}`).
+
+| Method        | Returns        | Description                                   |
+|---------------|----------------|-----------------------------------------------|
+| `name`        | `MacroId`      | The fresh variable's name.                    |
+| `expressions` | `ArrayLiteral` | The associated indices of the fresh variable. |
+
+### `MacroVerbatim`
+
+A `{% verbatim do %} ... {% end %}` expression. A `UnaryExpression` — the inner expression is available via `exp`.
+
+### `Underscore`
+
+The `_` expression, in code (e.g. an assignment target) and in type names. Adds no methods.
+
+### `MagicConstant`
+
+A pseudo constant carrying source-location information: `__FILE__`, `__LINE__`, `__DIR__`. Usually resolved by the compiler; appears unresolved as a default parameter value. Adds no methods.
+
+### `Asm`
+
+An inline assembly expression.
+
+| Method        | Returns                       | Description                                                          |
+|---------------|-------------------------------|----------------------------------------------------------------------|
+| `text`        | `StringLiteral`               | The template string.                                                 |
+| `outputs`     | `ArrayLiteral(AsmOperand)`    | The output operands.                                                 |
+| `inputs`      | `ArrayLiteral(AsmOperand)`    | The input operands.                                                  |
+| `clobbers`    | `ArrayLiteral(StringLiteral)` | Clobbered register names.                                            |
+| `volatile?`   | `BoolLiteral`                 | Whether there are side effects beyond `outputs`/`inputs`/`clobbers`. |
+| `alignstack?` | `BoolLiteral`                 | Whether stack alignment code is required.                            |
+| `intel?`      | `BoolLiteral`                 | Whether the template uses Intel syntax (`false` = AT&T).             |
+| `can_throw?`  | `BoolLiteral`                 | Whether the expression might unwind the stack.                       |
+
+### `AsmOperand`
+
+An output or input operand of an `Asm` node.
+
+| Method       | Returns         | Description                              |
+|--------------|-----------------|------------------------------------------|
+| `constraint` | `StringLiteral` | The constraint string.                   |
+| `exp`        | `ASTNode`       | The associated output or input argument. |
+
+## `MacroId`
+
+A fictitious node representing an identifier like `foo`, `Bar` or `something_else`. The parser never creates these; you create them by calling `id` on a `StringLiteral`, `SymbolLiteral`, `Call`, `Var` or `Path`. This lets strings, symbols, variables and calls be treated uniformly when generating names.
+
+`MacroId` supports the full [shared string method set](#string-like-nodes-stringliteral-symbolliteral-macroid) plus `>` and `<` comparisons.
+
+## `TypeNode`
+
+Represents an actual type in the program, like `Int32` or `String`. Obtained via `@type`, `@def`, resolving a `Path`/`Generic`/`Union`/`Metaclass`/`ProcNotation`, or type introspection methods.
+
+### Kind predicates
+
+| Method      | Returns       | Description                                           |
+|-------------|---------------|-------------------------------------------------------|
+| `abstract?` | `BoolLiteral` | Whether the type is abstract.                         |
+| `union?`    | `BoolLiteral` | Whether this is a union type. See also `union_types`. |
+| `nilable?`  | `BoolLiteral` | Whether `nil` is an instance of this type.            |
+| `module?`   | `BoolLiteral` | Whether this is a `module`.                           |
+| `class?`    | `BoolLiteral` | Whether this is a `class`.                            |
+| `struct?`   | `BoolLiteral` | Whether this is a `struct`.                           |
+
+### Name and structure
+
+| Method                     | Returns                  | Description                                                                                                  |
+|----------------------------|--------------------------|--------------------------------------------------------------------------------------------------------------|
+| `name(generic_args: true)` | `MacroId`                | Fully qualified name; without generic arguments if `generic_args: false`. `{{Foo.name}} # => Foo(T)`.        |
+| `type_vars`                | `ArrayLiteral(TypeNode)` | The type variables of a generic type (empty for non-generics).                                               |
+| `union_types`              | `ArrayLiteral(TypeNode)` | The types forming the union; for non-unions, this type in a single-element array — safe to call on any type. |
+| `size`                     | `NumberLiteral`          | Number of elements in a tuple type or tuple metaclass type; compile error otherwise.                         |
+| `keys`                     | `ArrayLiteral(MacroId)`  | Keys of a named tuple type; compile error otherwise.                                                         |
+| `[](key)`                  | `TypeNode \| NilLiteral` | The type for a key in a named tuple type (`SymbolLiteral \| MacroId`); compile error otherwise.              |
+
+### Hierarchy and members
+
+| Method                     | Returns                  | Description                                                                                                |
+|----------------------------|--------------------------|------------------------------------------------------------------------------------------------------------|
+| `ancestors`                | `ArrayLiteral(TypeNode)` | All ancestors of this type.                                                                                |
+| `superclass`               | `TypeNode \| NilLiteral` | The direct superclass.                                                                                     |
+| `subclasses`               | `ArrayLiteral(TypeNode)` | The direct subclasses.                                                                                     |
+| `all_subclasses`           | `ArrayLiteral(TypeNode)` | All subclasses (reliable inside `macro finished`).                                                         |
+| `includers`                | `ArrayLiteral(TypeNode)` | All types this type is directly included in.                                                               |
+| `constants`                | `ArrayLiteral(MacroId)`  | Constants and types defined by this type.                                                                  |
+| `constant(name)`           | `ASTNode`                | A constant defined in this type: its value as an `ASTNode`, a `TypeNode` if it's a type, or `NilLiteral`.  |
+| `has_constant?(name)`      | `BoolLiteral`            | Whether this type has the constant (`"DEFAULT_OPTIONS"` or `:DEFAULT_OPTIONS`).                            |
+| `instance_vars`            | `ArrayLiteral(MetaVar)`  | Instance variables of this type. Only from within methods — returns an empty list at top level.            |
+| `class_vars`               | `ArrayLiteral(MetaVar)`  | Class variables of this type.                                                                              |
+| `methods`                  | `ArrayLiteral(Def)`      | Instance methods defined by this type, excluding inherited ones.                                           |
+| `all_methods`              | `ArrayLiteral(Def)`      | Instance methods including those inherited from ancestors and base types (`Reference`, `Value`, `Object`). |
+| `has_method?(name)`        | `BoolLiteral`            | Whether this type has the method (`"default_options"` or `:default_options`).                              |
+| `overrides?(type, method)` | `BoolLiteral`            | Whether this type overrides *method* from *type*: `{{ Bar.overrides?(Foo, "one") }}`.                      |
+
+### Annotations and visibility
+
+| Method              | Returns                    | Description                                           |
+|---------------------|----------------------------|-------------------------------------------------------|
+| `annotation(type)`  | `Annotation \| NilLiteral` | The last `Annotation` of the given type on this type. |
+| `annotations(type)` | `ArrayLiteral(Annotation)` | All annotations of the given type on this type.       |
+| `annotations`       | `ArrayLiteral(Annotation)` | All annotations on this type.                         |
+| `private?`          | `BoolLiteral`              | Whether this type is private.                         |
+| `public?`           | `BoolLiteral`              | Whether this type is public.                          |
+| `visibility`        | `SymbolLiteral`            | `:public` or `:private`.                              |
+
+### Class/instance relationship and resolution
+
+| Method     | Returns    | Description                                                                           |
+|------------|------------|---------------------------------------------------------------------------------------|
+| `class`    | `TypeNode` | The class of this type — e.g. `type.class.methods` gives class methods.               |
+| `instance` | `TypeNode` | The instance type if this is a class type, or `self` otherwise. Opposite of `#class`. |
+| `resolve`  | `TypeNode` | Returns `self` — lets you call `resolve` on any node that might already be a type.    |
+| `resolve?` | `TypeNode` | Returns `self` — same purpose as `resolve`.                                           |
+
+### Comparison operators
+
+| Method      | Returns       | Description                                                                      |
+|-------------|---------------|----------------------------------------------------------------------------------|
+| `<(other)`  | `BoolLiteral` | Whether *other* is an ancestor of this type.                                     |
+| `<=(other)` | `BoolLiteral` | Whether this type is the same as *other* or *other* is an ancestor.              |
+| `>(other)`  | `BoolLiteral` | Whether this type is an ancestor of *other*.                                     |
+| `>=(other)` | `BoolLiteral` | Whether *other* is the same as this type or this type is an ancestor of *other*. |
+
+### Memory layout
+
+| Method                | Returns       | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+|-----------------------|---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `has_inner_pointers?` | `BoolLiteral` | Whether the type contains any inner pointers. Primitive types (except `Void`) do not; `Proc` and `Pointer` do; unions, structs, tuples and static arrays do if any member does; classes do. Types without inner pointers may use atomic allocation (`GC.malloc_atomic`): `Pointer(T).malloc` is atomic iff `T` has no inner pointers, and `T.allocate` is atomic iff `T` is a reference type and `ReferenceStorage(T)` has no inner pointers. Like `instance_vars`, must be called from within a method — results may be incorrect at top level. |
