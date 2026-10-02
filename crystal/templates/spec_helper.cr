@@ -7,17 +7,17 @@ require "../src/my_project"
 #
 # Crystal's built-in testing library, run with `crystal spec`. Specs live in `spec/**/*_spec.cr`.
 #
-#     ```crystal
-#     require "spec"
+#  ```crystal
+#  require "spec"
 #
-#     describe Array do
-#       describe "#size" do
-#         it "reports the number of elements" do
-#           [1, 2, 3].size.should eq 3
-#         end
-#       end
-#     end
-#     ```
+#  describe Array do
+#    describe "#size" do
+#      it "reports the number of elements" do
+#        [1, 2, 3].size.should eq 3
+#      end
+#    end
+#  end
+#  ```
 #
 # Structure
 # ---------
@@ -47,34 +47,34 @@ require "../src/my_project"
 #
 # `focus: true` on any example or group restricts the run to focused items. `tags` takes a `String` or `Enumerable(String)`; group tags are inherited by nested items.
 #
-#     ```crystal
-#     it "adds", focus: true { (1 + 1).should eq 2 }
+#  ```crystal
+#  it "adds", focus: true { (1 + 1).should eq 2 }
 #
-#     it "test git" do
-#       cmd = Process.find_executable("git")
-#       pending!("git is not available") unless cmd
-#       cmd.should end_with("git")
-#     end
-#     ```
+#  it "test git" do
+#    cmd = Process.find_executable("git")
+#    pending!("git is not available") unless cmd
+#    cmd.should end_with("git")
+#  end
+#  ```
 #
 # Expectations
 # ------------
 #
 # Every object gains `should` / `should_not`, which take a matcher and fail the example on mismatch. An optional failure message can follow:
 #
-#     ```crystal
-#     actual.should eq(expected)
-#     actual.should_not be_nil
-#     value.should eq(42), "custom message"
-#     ```
+#  ```crystal
+#  actual.should eq(expected)
+#  actual.should_not be_nil
+#  value.should eq(42), "custom message"
+#  ```
 #
 # Some overloads narrow the returned type:
 #
-#     ```crystal
-#     x = x.should be_a(Int32)      # excludes other union members
-#     x = x.should_not be_a(Char)   # excludes Char
-#     x = x.should_not be_nil       # excludes Nil
-#     ```
+#  ```crystal
+#  x = x.should be_a(Int32)      # excludes other union members
+#  x = x.should_not be_a(Char)   # excludes Char
+#  x = x.should_not be_nil       # excludes Nil
+#  ```
 #
 # Matchers
 # --------
@@ -95,15 +95,15 @@ require "../src/my_project"
 # `expect_raises`
 # ---------------
 #
-#     ```crystal
-#     expect_raises(klass, message = nil, &block)
-#     ```
+#  ```crystal
+#  expect_raises(klass, message = nil, &block)
+#  ```
 #
 # Passes if the block raises `klass` whose message contains `message` (a `String`), matches it (a `Regex`), or unconditionally (`nil`). Returns the rescued exception.
 #
-#     ```crystal
-#     ex = expect_raises(ArgumentError, "bad input") { raise ArgumentError.new("bad input here") }
-#     ```
+#  ```crystal
+#  ex = expect_raises(ArgumentError, "bad input") { raise ArgumentError.new("bad input here") }
+#  ```
 #
 # Hooks
 # -----
@@ -125,26 +125,26 @@ require "../src/my_project"
 #   `Spec.before_suite(&block)` / `Spec.after_suite(&block)`  Once around the whole suite.
 #   `Spec.around_each(&block : Example::Procsy ->)`           Wraps each spec; block must call `example.run`.
 #
-#     ```crystal
-#     describe "nested" do
-#       around_each do |example|
-#         setup
-#         example.run
-#         teardown
-#       end
-#     end
-#     ```
+#  ```crystal
+#  describe "nested" do
+#    around_each do |example|
+#      setup
+#      example.run
+#      teardown
+#    end
+#  end
+#  ```
 #
 # Command line
 # ------------
 #
-#     ```console
-#     crystal spec                          # all specs
-#     crystal spec spec/foo_spec.cr         # one file
-#     crystal spec spec/foo_spec.cr:14      # the spec/group at line 14
-#     crystal spec --tag fast               # tagged "fast"
-#     crystal spec --tag ~slow              # excluding "slow"
-#     ```
+#  ```console
+#  crystal spec                          # all specs
+#  crystal spec spec/foo_spec.cr         # one file
+#  crystal spec spec/foo_spec.cr:14      # the spec/group at line 14
+#  crystal spec --tag fast               # tagged "fast"
+#  crystal spec --tag ~slow              # excluding "slow"
+#  ```
 #
 #   `-e`, `--example STRING`  Run examples whose full nested name includes `STRING`.
 #   `-l`, `--line LINE`       Run examples on `LINE`.
@@ -179,29 +179,29 @@ require "../src/my_project"
 # `require "spec/helpers/iterate"`
 # --------------------------------
 #
-#     ```crystal
-#     it_iterates(description, expected, method, *, infinite = false, tuple = false)
-#     ```
+#  ```crystal
+#  it_iterates(description, expected, method, *, infinite = false, tuple = false)
+#  ```
 #
 # Creates two examples (`" yielding"` and `" iterator"`) testing both forms of an iteration method against `expected`, checking element type-equality. `infinite` skips the finish check; `tuple` splats multi-value elements. Lower-level `assert_iterates_yielding` and `assert_iterates_iterator` can be used inside an example directly.
 #
-#     ```crystal
-#     it_iterates "Array#each", [1, 2, 3], (1..3).each
-#     it_iterates "#cycle", [1, 2, 3, 1], (1..3).cycle, infinite: true
-#     it_iterates "#each_with_index", [{1, 0}, {2, 1}], (1..2).each_with_index, tuple: true
-#     ```
+#  ```crystal
+#  it_iterates "Array#each", [1, 2, 3], (1..3).each
+#  it_iterates "#cycle", [1, 2, 3, 1], (1..3).cycle, infinite: true
+#  it_iterates "#each_with_index", [{1, 0}, {2, 1}], (1..2).each_with_index, tuple: true
+#  ```
 #
 # `require "spec/helpers/string"`
 # -------------------------------
 #
-#     ```crystal
-#     assert_prints(call, str)
-#     assert_prints(call, *, should: expectation)
-#     ```
+#  ```crystal
+#  assert_prints(call, str)
+#  assert_prints(call, *, should: expectation)
+#  ```
 #
 # Asserts that a call and its `IO`-accepting overload both produce the same string. Checks the direct call (must return `String`), the `String.build` form, and a UTF-16-encoded `IO` round-trip (skipped under the `without_iconv` flag).
 #
-#     ```crystal
-#     assert_prints 123.to_s, "123"
-#     assert_prints 123.to_s(16), "7b"
-#     ```
+#  ```crystal
+#  assert_prints 123.to_s, "123"
+#  assert_prints 123.to_s(16), "7b"
+#  ```

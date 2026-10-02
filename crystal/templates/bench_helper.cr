@@ -14,53 +14,53 @@ require "../src/my_project"
 # 
 # `Benchmark.ips` reports iterations/second, mean time per iteration, relative standard deviation, bytes/op, and a comparison against the fastest task:
 # 
-#     ```crystal
-#     Benchmark.ips do |x|
-#       x.report("short sleep") { sleep 10.milliseconds }
-#       x.report("shorter sleep") { sleep 1.millisecond }
-#     end
-#     ```
+#  ```crystal
+#  Benchmark.ips do |x|
+#    x.report("short sleep") { sleep 10.milliseconds }
+#    x.report("shorter sleep") { sleep 1.millisecond }
+#  end
+#  ```
 # 
-#     ```text
-#       short sleep   88.7  ( 11.27ms) (± 3.33%)  8.90× slower
-#     shorter sleep  789.7  (  1.27ms) (± 3.02%)       fastest
-#     ```
+#  ```text
+#    short sleep   88.7  ( 11.27ms) (± 3.33%)  8.90× slower
+#  shorter sleep  789.7  (  1.27ms) (± 3.02%)       fastest
+#  ```
 # 
 # A warmup stage (default 2s) finds how many cycles run each block for ~100ms; the calculation stage (default 5s) runs those sets to compute the statistics. 
 # Both durations are configurable:
 # 
-#     ```crystal
-#     Benchmark.ips(warmup: 4.seconds, calculation: 10.seconds) do |x|
-#       x.report("sleep") { sleep 10.milliseconds }
-#     end
-#     ```
+#  ```crystal
+#  Benchmark.ips(warmup: 4.seconds, calculation: 10.seconds) do |x|
+#    x.report("sleep") { sleep 10.milliseconds }
+#  end
+#  ```
 # 
 # Sequential experiments
 # ----------------------
 # 
 # `Benchmark.bm` runs experiments in sequence, printing a labeled column report of user/system/total/real time:
 # 
-#     ```crystal
-#     Benchmark.bm do |x|
-#       x.report("times:") { n.times { a = "1" } }
-#       x.report("upto:")  { 1.upto(n) { a = "1" } }
-#     end
-#     ```
+#  ```crystal
+#  Benchmark.bm do |x|
+#    x.report("times:") { n.times { a = "1" } }
+#    x.report("upto:")  { 1.upto(n) { a = "1" } }
+#  end
+#  ```
 # 
-#     ```text
-#                user     system      total        real
-#     times:   0.010000   0.000000   0.010000 (  0.008976)
-#     upto:    0.010000   0.000000   0.010000 (  0.010466)
-#     ```
+#  ```text
+#             user     system      total        real
+#  times:   0.010000   0.000000   0.010000 (  0.008976)
+#  upto:    0.010000   0.000000   0.010000 (  0.010466)
+#  ```
 # 
 # One-off measurements
 # --------------------
 # 
-#     ```crystal
-#     Benchmark.measure { "a" * 1_000_000_000 } # => BM::Tms (user/system/total/real, in seconds)
-#     Benchmark.realtime { "a" * 100_000 }      # => 00:00:00.0005840
-#     Benchmark.memory { Array(Int32).new }     # => 32  (bytes)
-#     ```
+#  ```crystal
+#  Benchmark.measure { "a" * 1_000_000_000 } # => BM::Tms (user/system/total/real, in seconds)
+#  Benchmark.realtime { "a" * 100_000 }      # => 00:00:00.0005840
+#  Benchmark.memory { Array(Int32).new }     # => 32  (bytes)
+#  ```
 # 
 # Module methods:
 #   `bm(&block) : BM::Job`
