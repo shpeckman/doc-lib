@@ -55,7 +55,7 @@ When creating parent nodes:
 Before finalizing a node:
 
 - [ ] < 4k tokens
-- [ ] Purpose statement in first 2 lines
+- [ ] Purpose statement in the first lines, before any section content
 - [ ] Contracts are explicit (not "handle carefully")
 - [ ] Anti-patterns from real experience, not hypothetical
 - [ ] Downlinks use relative paths
