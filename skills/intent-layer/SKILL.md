@@ -31,11 +31,11 @@ Hierarchical `AGENTS.md` infrastructure so agents navigate codebases with local 
 
 ## Node Thresholds
 
-| Directory size | Action |
-|---|---|
-| <20k tokens | No node needed |
-| 20-64k tokens | Create a 2-3k token node |
-| >64k tokens | Split into child nodes |
+| Directory size | Action                   |
+|----------------|--------------------------|
+| <20k tokens    | No node needed           |
+| 20-64k tokens  | Create a 2-3k token node |
+| >64k tokens    | Split into child nodes   |
 
 Beyond size, create a child node when a directory has a clear responsibility shift or hidden contracts/invariants. Place cross-cutting facts at the lowest common ancestor. Do NOT create nodes for every directory, simple utilities, or test folders (unless complex).
 

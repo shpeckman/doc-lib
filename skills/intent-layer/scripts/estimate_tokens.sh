@@ -17,7 +17,7 @@ if [ ! -e "$TARGET_PATH" ]; then
 fi
 
 # Source and doc extensions included in the estimate
-EXTENSIONS="ts tsx js jsx mjs cjs py go rs java rb php swift kt c cc cpp h hpp cs vue svelte astro md mdx json yaml yml toml sql graphql prisma sh"
+EXTENSIONS="ts tsx js jsx mjs cjs py go rs java rb php swift kt c cc cpp h hpp cs cr ecr vue svelte astro md mdx json yaml yml toml sql graphql prisma sh"
 
 # Lock files and generated artifacts excluded (they inflate estimates without adding intent)
 EXCLUDE_NAMES="package-lock.json yarn.lock pnpm-lock.yaml Cargo.lock Gemfile.lock poetry.lock composer.lock Pipfile.lock go.sum bun.lockb"
