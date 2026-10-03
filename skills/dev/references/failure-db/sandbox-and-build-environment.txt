@@ -1,0 +1,5 @@
+[sandbox and build environment]
+SB-001 | Toolchain gone every turn | Everything outside `/mnt/agents` is wiped when the sandbox is released | Re-restore each turn: `install_crystal.py` (tarball cached in `/mnt/agents/crystal-cache`), apt-download headers, recompile `llvm_ext.o`
+SB-002 | `apt-get download` → "List directory /tmp/aptlists/partial is missing", then "Unable to locate package" | A custom `Dir::State::Lists` path needs its `partial` dir and an `update` before downloads | `mkdir -p /tmp/aptlists/partial` + `apt-get -o Dir::State::Lists=/tmp/aptlists update`
+SB-003 | LLVM header/runtime juggling | The stdlib targets LLVM 15; the base image ships only the runtime `libLLVM-15.so`, no headers | Extract `llvm-15-dev` with `dpkg -x` into a scratch dir and point g++ at it
+SB-004 | Skill directory `/app/.user/skills` is a read-only mount in-session | User skills sync from the account; only `/mnt/agents/output` is writable | Edit skills via a staging copy, package to `.skill`, reinstall; klog uses a scratch-overlay + export flow because of this

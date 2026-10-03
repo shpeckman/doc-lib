@@ -1,6 +1,6 @@
 ---
 name: dev
-description: Crystal language development workflow with Analysis/Code modes, a bundled toolchain installer, and a fast GitHub clone tool. Use when the user is writing, discussing, or asking about Crystal code (.cr files, shards, shard.yml), when the user invokes mode commands like //analyze, //a, //code, or //c, when the Crystal toolchain (crystal/shards) needs to be installed or restored in the environment, or when a GitHub repository needs to be cloned quickly (shallow, mirrored).
+description: Crystal language development workflow with Analysis/Code modes, a bundled toolchain installer, a fast GitHub clone tool, and a failure knowledge base (klog) for logging, searching, and curating recurring errors. Use when the user is writing, discussing, or asking about Crystal code (.cr files, shards, shard.yml), when the user invokes mode commands like //analyze, //a, //code, or //c, when the Crystal toolchain (crystal/shards) needs to be installed or restored in the environment, when a GitHub repository needs to be cloned quickly (shallow, mirrored), or when a compile/spec/toolchain failure should be looked up in or recorded into the known-problems database.
 ---
 
 # Dev
@@ -46,6 +46,15 @@ Apply these in Code Mode (and to any snippet shown in Analysis Mode):
 - Search online before making factual claims, when online search is available.
 - Do not write documentation unless the user explicitly requests it.
 
+## User Machine
+
+The user's local development machine (distinct from the sandbox):
+
+- OS: Fedora Linux 42, kernel 6.19.14-108.fc42.x86_64 (64-bit)
+- Desktop: KDE Plasma 6.5.5, KDE Frameworks 6.22.0, Qt 6.9.3, Wayland
+- Hardware: Lenovo ThinkPad X13 Gen 3 (21BN001CMB), 16 × 12th Gen Intel Core i5-1240P, 16 GiB RAM (15.3 GiB usable), Intel Iris Xe Graphics
+- Crystal: 1.21.0
+
 ## Toolchain Installation
 
 When `crystal` or `shards` is missing from the environment, run:
@@ -65,3 +74,23 @@ python3 scripts/gh_clone.py owner/repo [dest]
 ```
 
 The script performs a shallow (`--depth 1`), single-branch clone through the `gh-proxy.com` mirror, falling back to direct github.com on failure. Accepts `owner/repo`, HTTPS, and SSH (`git@github.com:...`) specs. Useful flags: `--branch`, `--depth`, `--full` (complete history), `--no-mirror` (see `--help`).
+
+## Failure Knowledge Base
+
+Recurring failures are captured, curated, and searched with `scripts/klog.py`. The curated database lives in `references/failure-db/<category>.txt` — one `ID (×n) | symptom | cause | fix` entry per line; it is read-only in-session. The session scratch log (raw captures + new entries + overlays) lives in `/mnt/agents/failure-log/`.
+
+Protocol:
+
+- Route shell commands through the runner, especially build/spec/toolchain ones: `python3 scripts/klog.py run crystal build ...` (or one quoted string for compound commands). Output streams through unchanged and the exit code is preserved; failures and warnings are captured into the scratch inbox automatically.
+- When any compile/spec/toolchain error appears, run `python3 scripts/klog.py grep <token>` before diagnosing from scratch.
+- Curate failures with reuse value (language quirks, environment traps — not typos): `klog.py promote <n> --cat <category> --cause "..." [--fix "..."]` for inbox captures, `klog.py add` otherwise.
+- The moment a fix is found, record it with `klog.py fix <ID> --fix "..."`. Recurrence of a known problem: `klog.py bump <ID>`.
+- Session wrap-up (or when the user asks): `klog.py export --dry-run`, review, then `klog.py export`; resolve anything in `klog.py pending`; copy the exported files into a skill working copy, fold ×3+ entries into a Known Traps list below, and repackage the skill (see SB-004).
+
+Commands: `run`, `add`, `promote`, `fix`, `bump`, `grep [--inbox]`, `pending`, `brief`, `export [--dry-run] [--out DIR]` — details via `python3 scripts/klog.py <cmd> --help`. Locations overridable via `KLOG_SCRATCH` / `KLOG_DB`.
+
+### Known Traps
+
+Entries that recur across sessions (×3+) — apply proactively, don't rediscover:
+
+- `out` is a reserved keyword; never use it as an identifier (CQ-001).

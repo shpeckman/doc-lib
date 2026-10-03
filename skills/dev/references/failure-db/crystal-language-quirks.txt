@@ -1,0 +1,15 @@
+[crystal language quirks]
+CQ-001 (×2) | `out` as an identifier → syntax error | `out` is a reserved keyword | Renamed (`io_out`, `acc`)
+CQ-002 | `def array? : Bool` inside the `FieldType` enum fails | Enum member `Bool` shadows `::Bool` inside the enum body | Return type `::Bool`
+CQ-003 | `offsetof(TextRt, @ivar)` → "doesn't have an instance variable" | Ivars assigned only inside a lazily-instantiated `initialize` don't exist at type level | Declare fields at type level with `property`
+CQ-004 | Macro-generated nil assignments in `initialize` confused nilability analysis | Ivar types must be resolvable at class level | Explicit per-field assignments
+CQ-005 | "declaring the type of an instance variable must be done at the class level" | Lazily checked — only fires when the method is instantiated; the spec suite never built an `App`, the demo did | Moved `@global_mouse` / `@global_key` / `@resize_handler` declarations to class level
+CQ-006 | Ivar inference failed for generic-return / block-assigned values (`@render`, `@engine`) | Generic method returns can't drive ivar inference | Explicit annotations, e.g. `@render : Proc(Void*, Nil)`
+CQ-007 | `pointerof(rt)` rejected as a `Void*` argument | No implicit pointer-to-`Void*` conversion | `pointerof(rt).as(Void*)`
+CQ-008 | `Cache(String, Compiled)::Stats` unresolved in a return annotation | Generic instantiation syntax not usable there | Dropped the annotation
+CQ-009 | `each_with_index.map { }[i]` → no method `[]` | `each_with_index` produces an Iterator | `map_with_index`, block-form reduce
+CQ-010 | `require "/abs/path"` rejected | Absolute requires are not allowed | Relative requires from the project root
+CQ-011 | `app.focusable(*ids)` → "argument to splat must be a tuple, not Array(Int32)" | Splats accept tuples only | Added a `focusable(ids : Enumerable(Int32))` overload
+CQ-012 | `alias L` collided across spec files | All spec files share one program namespace | Renamed to `LW` in widgets_spec
+CQ-013 | "#{{ tag }}" in a demo template broke compilation | `#{` is Crystal string interpolation | Escaped as `\\#{`
+CQ-014 | Deprecation warning: `Time.monotonic` | Deprecated in favor of `Time.instant`, which returns `Time::Instant` | Event timestamps switched to `Time::Instant` (subtraction still yields `Time::Span`); specs build instants via `Time::Instant.new(seconds:, nanoseconds:)`
