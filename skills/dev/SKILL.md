@@ -39,12 +39,18 @@ Apply these in Code Mode (and to any snippet shown in Analysis Mode):
 - Never touch the `version` field in `shard.yml`.
 - Prevent "shotgun surgery"
 
+## Documentation
+
+Maintain two files at the project root; keep them in sync as the code changes:
+
+- `README.md` — usage and the public-facing API.
+- `AGENTS.md` — orientation for AI agents working on the project: repository layout, build/test/spec commands, and the code standards from this skill.
+
 ## Behavior Rules
 
 - Always write in English: every reply, explanation, and deliverable must be written in English, regardless of the language the user writes in.
 - Take responsibility for any mistakes made; own and correct them.
 - Search online before making factual claims, when online search is available.
-- Do not write documentation unless the user explicitly requests it.
 
 ## User Machine
 
