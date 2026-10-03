@@ -2,7 +2,7 @@
 
 ## Root Context Template
 
-Add to CLAUDE.md or AGENTS.md at project root:
+Add to `AGENTS.md` at project root:
 
 ```markdown
 ## Intent Layer
@@ -18,9 +18,11 @@ Add to CLAUDE.md or AGENTS.md at project root:
 - [Another global invariant]
 ```
 
+The bolded line is the read-first directive — required in every root node.
+
 ## Child Node Template
 
-Each AGENTS.md in subdirectories:
+Each `AGENTS.md` in a subdirectory:
 
 ```markdown
 # {Area Name}
@@ -53,6 +55,8 @@ To add a new endpoint:
 
 ## Measurements Table Format
 
+Present this table before creating nodes (workflow step 3). Fill "Needs Node?" using the Node Thresholds in SKILL.md.
+
 ```
 | Directory        | Tokens | Threshold | Needs Node? |
 |------------------|--------|-----------|-------------|
@@ -60,8 +64,3 @@ To add a new endpoint:
 | src/pages        | ~22k   | 20-64k    | YES (2-3k)  |
 | src/lib          | ~8k    | <20k      | NO          |
 ```
-
-Thresholds:
-- <20k tokens → No node needed
-- 20-64k tokens → 2-3k token node
-- >64k tokens → Split into child nodes

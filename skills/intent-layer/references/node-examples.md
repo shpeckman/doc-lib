@@ -117,5 +117,5 @@ Manages user accounts, auth, and preferences. Express + Prisma + PostgreSQL.
 1. **Purpose before structure** - What it owns, what it doesn't
 2. **Contracts are explicit** - Where things must go through
 3. **Anti-patterns from experience** - Real mistakes to avoid
-4. **Compression over explanation** - Assume Claude is smart
+4. **Compression over explanation** - Assume the agent is smart
 5. **Downlinks for depth** - Point to related context, don't duplicate

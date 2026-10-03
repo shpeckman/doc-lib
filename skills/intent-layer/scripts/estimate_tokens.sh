@@ -1,73 +1,80 @@
 #!/usr/bin/env bash
-# Estimate token count for a directory to determine Intent Node needs.
+# Estimate token count for a directory or a single file.
 #
 # Usage:
-#     estimate_tokens.sh <path>
+#     bash estimate_tokens.sh <path>     # directory or file
 #
-# Token estimation: ~4 chars per token (rough approximation)
-#
-# Guidelines:
-#     <20k tokens: Usually no dedicated node needed
-#     20-64k tokens: Good candidate for 2-3k token node
-#     >64k tokens: Consider splitting into child nodes
+# Token estimation: ~4 bytes per token (rough approximation).
+# Thresholds (20k / 64k / 4k) are defined in SKILL.md → "Node Thresholds".
 
 set -e
 
 TARGET_PATH="${1:-.}"
 
-if [ ! -d "$TARGET_PATH" ]; then
+if [ ! -e "$TARGET_PATH" ]; then
     echo "Error: Path not found: $TARGET_PATH"
     exit 1
 fi
 
-DIR_NAME=$(basename "$TARGET_PATH")
+# Source and doc extensions included in the estimate
+EXTENSIONS="ts tsx js jsx mjs cjs py go rs java rb php swift kt c cc cpp h hpp cs vue svelte astro md mdx json yaml yml toml sql graphql prisma sh"
 
-echo "=== Token Estimate: $DIR_NAME ==="
+# Lock files and generated artifacts excluded (they inflate estimates without adding intent)
+EXCLUDE_NAMES="package-lock.json yarn.lock pnpm-lock.yaml Cargo.lock Gemfile.lock poetry.lock composer.lock Pipfile.lock go.sum bun.lockb"
+
+NAME_EXPR=()
+first=1
+for ext in $EXTENSIONS; do
+    if [ "$first" -eq 1 ]; then
+        NAME_EXPR+=( \( -name "*.$ext" )
+        first=0
+    else
+        NAME_EXPR+=( -o -name "*.$ext" )
+    fi
+done
+NAME_EXPR+=( \) ! -name "*.min.js" ! -name "*.min.css" ! -name "*.map" )
+for lock in $EXCLUDE_NAMES; do
+    NAME_EXPR+=( ! -name "$lock" )
+done
+
+PRUNE=( -path "*/node_modules" -o -path "*/.git" -o -path "*/dist"
+        -o -path "*/.next" -o -path "*/build" -o -path "*/__pycache__"
+        -o -path "*/coverage" -o -path "*/vendor" -o -path "*/target" )
+
+LABEL=$(basename "$TARGET_PATH")
+echo "=== Token Estimate: $LABEL ==="
 echo ""
 
-# Count bytes and estimate tokens
-BYTES=$(find "$TARGET_PATH" -type f \
-    \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \
-    -o -name "*.py" -o -name "*.go" -o -name "*.rs" -o -name "*.java" \
-    -o -name "*.rb" -o -name "*.php" -o -name "*.swift" -o -name "*.kt" \
-    -o -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.cs" \
-    -o -name "*.vue" -o -name "*.svelte" -o -name "*.astro" \
-    -o -name "*.md" -o -name "*.mdx" -o -name "*.json" \
-    -o -name "*.yaml" -o -name "*.yml" -o -name "*.toml" \
-    -o -name "*.sql" -o -name "*.graphql" -o -name "*.prisma" \) \
-    -not -path "*/node_modules/*" \
-    -not -path "*/.git/*" \
-    -not -path "*/dist/*" \
-    -not -path "*/.next/*" \
-    -not -path "*/build/*" \
-    -not -path "*/__pycache__/*" \
-    -exec cat {} + 2>/dev/null | wc -c | tr -d ' ')
-
-TOKENS=$((BYTES / 4))
-FILE_COUNT=$(find "$TARGET_PATH" -type f \
-    \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \
-    -o -name "*.py" -o -name "*.go" -o -name "*.rs" -o -name "*.java" \
-    -o -name "*.astro" -o -name "*.vue" -o -name "*.svelte" \
-    -o -name "*.md" -o -name "*.mdx" \) \
-    -not -path "*/node_modules/*" \
-    -not -path "*/.git/*" \
-    2>/dev/null | wc -l | tr -d ' ')
-
-# Format tokens
-if [ "$TOKENS" -ge 1000000 ]; then
-    FORMATTED=$(echo "scale=1; $TOKENS/1000000" | bc)M
-elif [ "$TOKENS" -ge 1000 ]; then
-    FORMATTED=$(echo "scale=1; $TOKENS/1000" | bc)k
+if [ -f "$TARGET_PATH" ]; then
+    BYTES=$(wc -c < "$TARGET_PATH" | tr -d ' ')
+    FILE_COUNT=1
 else
-    FORMATTED=$TOKENS
+    BYTES=$(find "$TARGET_PATH" \( "${PRUNE[@]}" \) -prune -o -type f "${NAME_EXPR[@]}" \
+        -exec cat {} + 2>/dev/null | wc -c | tr -d ' ')
+    FILE_COUNT=$(find "$TARGET_PATH" \( "${PRUNE[@]}" \) -prune -o -type f "${NAME_EXPR[@]}" \
+        -print 2>/dev/null | wc -l | tr -d ' ')
 fi
+
+BYTES=${BYTES:-0}
+TOKENS=$((BYTES / 4))
+
+FORMATTED=$(awk -v t="$TOKENS" 'BEGIN {
+    if (t >= 1000000) printf "%.1fM", t / 1000000
+    else if (t >= 1000) printf "%.1fk", t / 1000
+    else printf "%d", t
+}')
 
 echo "Total tokens: ~$FORMATTED ($TOKENS)"
 echo "File count: $FILE_COUNT"
 echo ""
 
-# Recommendation
-if [ "$TOKENS" -lt 20000 ]; then
+if [ -f "$TARGET_PATH" ]; then
+    if [ "$TOKENS" -le 4000 ]; then
+        echo "Node size: under 4k tokens — within the per-node guideline"
+    else
+        echo "Node size: over 4k tokens — compress before finalizing (see references/node-examples.md)"
+    fi
+elif [ "$TOKENS" -lt 20000 ]; then
     echo "Threshold: <20k"
     echo "Recommendation: No dedicated Intent Node needed"
 elif [ "$TOKENS" -lt 64000 ]; then
@@ -77,4 +84,3 @@ else
     echo "Threshold: >64k"
     echo "Recommendation: Consider splitting into child Intent Nodes"
 fi
-

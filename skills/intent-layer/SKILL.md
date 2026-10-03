@@ -1,69 +1,55 @@
+---
+name: intent-layer
+description: Hierarchical AGENTS.md infrastructure for codebases. Creates, audits, and maintains a root AGENTS.md plus child AGENTS.md intent nodes in complex subdirectories so coding agents navigate the repo with local purpose, contracts, patterns, and anti-patterns. Use when the user asks to set up, improve, or audit AGENTS.md files, add agent context or onboarding documentation to a codebase, build an intent layer, decide which directories deserve their own AGENTS.md, measure directory token sizes to place context files, or interview domain experts to capture codebase knowledge.
+---
+
 # Intent Layer
 
-Hierarchical AGENTS.md infrastructure so agents navigate codebases like senior engineers.
+Hierarchical `AGENTS.md` infrastructure so agents navigate codebases with local context.
 
 ## Core Principle
 
-**Only ONE root context file.** CLAUDE.md and AGENTS.md should NOT coexist at project root. Child AGENTS.md in subdirectories are encouraged for complex subsystems.
+**Exactly one root context file: `AGENTS.md` at the project root.** Never create a second root-level context file. Child `AGENTS.md` files in subdirectories are encouraged for complex subsystems.
 
 ## Workflow
 
-```
-1. Detect state
-   scripts/detect_state.sh /path/to/project
-   → Returns: none | partial | complete
+1. **Detect state** — run `bash scripts/detect_state.sh <project-path>`. Returns `none`, `partial`, or `complete`.
+2. **Route** by state:
+   - `none` or `partial` → initial setup (steps 3-5)
+   - `complete` → maintenance (step 6)
+3. **Measure** — run `bash scripts/analyze_structure.sh <project-path>`, then `bash scripts/estimate_tokens.sh <dir>` on each candidate source directory. **Stop here:** present the measurements table (format: references/templates.md) and confirm with the user before creating any files.
+4. **Decide placements** — apply the Node Thresholds below.
+5. **Execute**:
+   - No root file → create root `AGENTS.md` from references/templates.md.
+   - Root file exists → add the Intent Layer section (read-first directive + downlinks) from references/templates.md.
+   - Create child nodes where measurements warrant; follow the patterns in references/node-examples.md.
+   - Validate: one root file, read-first directive present, each node under 4k tokens (`bash scripts/estimate_tokens.sh <node-file>`).
+6. **Maintain** (state `complete`) — ask the user which to run:
+   - a) Audit nodes → interview with references/capture-protocol.md
+   - b) Find candidates → re-run steps 3-4 and suggest new nodes
+   - c) Both
 
-2. Route
-   none/partial → Initial setup (steps 3-5)
-   complete     → Maintenance (step 6)
+## Node Thresholds
 
-3. Measure [gate - show table first]
-   scripts/analyze_structure.sh /path/to/project
-   scripts/estimate_tokens.sh /path/to/each/source/dir
+| Directory size | Action |
+|---|---|
+| <20k tokens | No node needed |
+| 20-64k tokens | Create a 2-3k token node |
+| >64k tokens | Split into child nodes |
 
-4. Decide
-   No root file  → Ask: CLAUDE.md or AGENTS.md?
-   Has root file → Add Intent Layer section + child nodes if needed
-
-5. Execute
-   Use references/templates.md for structure
-   Use references/node-examples.md for real-world patterns
-   Validate: one root, READ-FIRST directive, <4k tokens per node
-
-6. Maintenance mode (when state=complete)
-   Ask user:
-   a) Audit nodes     → Use references/capture-protocol.md for SME questions
-   b) Find candidates → Re-measure tokens, suggest new nodes
-   c) Both
-```
-
-## When to Create Child Nodes
-
-| Signal | Action |
-|--------|--------|
-| >20k tokens in directory | Create AGENTS.md |
-| Responsibility shift | Create AGENTS.md |
-| Hidden contracts/invariants | Document in nearest ancestor |
-| Cross-cutting concern | Place at LCA |
-
-Do NOT create for: every directory, simple utilities, test folders (unless complex).
+Beyond size, create a child node when a directory has a clear responsibility shift or hidden contracts/invariants. Place cross-cutting facts at the lowest common ancestor. Do NOT create nodes for every directory, simple utilities, or test folders (unless complex).
 
 ## Capture Questions
 
-When documenting existing code, ask:
-1. What does this area own? What's out of scope?
-2. What invariants must never be violated?
-3. What repeatedly confuses new engineers?
-4. What patterns should always be followed?
+Document existing code by interviewing the user with the SME protocol in references/capture-protocol.md (questions, summarization rules, quality checklist).
 
 ## Resources
 
-**Scripts:**
-- `scripts/detect_state.sh` - Check Intent Layer state (none/partial/complete)
-- `scripts/analyze_structure.sh` - Find semantic boundaries
-- `scripts/estimate_tokens.sh` - Measure directory complexity
+Run all scripts with `bash` (they are not executable directly).
 
-**References:**
-- `references/templates.md` - Root and child node templates
-- `references/node-examples.md` - Real-world examples
-- `references/capture-protocol.md` - SME interview protocol
+- `scripts/detect_state.sh` — report Intent Layer state: `none` / `partial` / `complete`
+- `scripts/analyze_structure.sh` — map semantic boundaries and candidate node locations
+- `scripts/estimate_tokens.sh` — token estimate for a directory or a single node file
+- `references/templates.md` — root and child node templates, measurements table format
+- `references/node-examples.md` — real-world node examples, compression patterns
+- `references/capture-protocol.md` — SME interview protocol and node quality checklist
